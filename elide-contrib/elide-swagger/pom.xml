@@ -42,7 +42,7 @@
         <dependency>
             <groupId>com.yahoo.elide</groupId>
     	    <artifactId>elide-core</artifactId>
-            <version>4.4.2-SNAPSHOT</version>
+            <version>4.5.14</version>
         </dependency>
 
         <!-- Test -->
