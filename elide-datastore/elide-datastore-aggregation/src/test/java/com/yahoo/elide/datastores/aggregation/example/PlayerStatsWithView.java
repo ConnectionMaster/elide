@@ -14,6 +14,9 @@ import com.yahoo.elide.datastores.aggregation.annotation.Join;
 import com.yahoo.elide.datastores.aggregation.annotation.MetricFormula;
 import com.yahoo.elide.datastores.aggregation.annotation.Temporal;
 import com.yahoo.elide.datastores.aggregation.annotation.TimeGrainDefinition;
+import com.yahoo.elide.datastores.aggregation.example.dimensions.Country;
+import com.yahoo.elide.datastores.aggregation.example.dimensions.CountryView;
+import com.yahoo.elide.datastores.aggregation.example.dimensions.SubCountry;
 import com.yahoo.elide.datastores.aggregation.metadata.enums.TimeGrain;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.annotation.FromTable;
 import lombok.EqualsAndHashCode;
@@ -97,7 +100,7 @@ public class PlayerStatsWithView {
         this.id = id;
     }
 
-    @MetricFormula("MAX({{highScore}})")
+    @MetricFormula("MAX({{$highScore}})")
     @ColumnMeta(description = "very awesome score")
     public long getHighScore() {
         return highScore;
@@ -107,7 +110,7 @@ public class PlayerStatsWithView {
         this.highScore = highScore;
     }
 
-    @MetricFormula("MIN({{lowScore}})")
+    @MetricFormula("MIN({{$lowScore}})")
     public long getLowScore() {
         return lowScore;
     }
@@ -126,7 +129,7 @@ public class PlayerStatsWithView {
         this.overallRating = overallRating;
     }
 
-    @Join("{{country_id}} = {{country.id}}")
+    @Join("{{$country_id}} = {{country.$id}}")
     public Country getCountry() {
         return country;
     }
@@ -135,7 +138,7 @@ public class PlayerStatsWithView {
         this.country = country;
     }
 
-    @Join("{{sub_country_id}} = {{subCountry.id}}")
+    @Join("{{$sub_country_id}} = {{subCountry.$id}}")
     public SubCountry getSubCountry() {
         return subCountry;
     }
@@ -144,7 +147,7 @@ public class PlayerStatsWithView {
         this.subCountry = subCountry;
     }
 
-    @Join("{{player_id}} = {{player.id}}")
+    @Join("{{$player_id}} = {{player.$id}}")
     public Player getPlayer() {
         return player;
     }
@@ -158,7 +161,7 @@ public class PlayerStatsWithView {
      *
      * @return the date of the player session.
      */
-    @Temporal(grain = @TimeGrainDefinition(grain = TimeGrain.DAY, expression = ""), timeZone = "UTC")
+    @Temporal(grains = { @TimeGrainDefinition(grain = TimeGrain.DAY, expression = "")}, timeZone = "UTC")
     public Date getRecordedDate() {
         return recordedDate;
     }
@@ -187,12 +190,12 @@ public class PlayerStatsWithView {
         this.subCountryIsoCode = isoCode;
     }
 
-    @Join("{{country_id}} = {{countryView.id}}")
+    @Join("{{$country_id}} = {{countryView.$id}}")
     public CountryView getCountryView() {
         return countryView;
     }
 
-    @DimensionFormula("{{countryView.iso_code}}")
+    @DimensionFormula("{{countryView.$iso_code}}")
     public String getCountryViewIsoCode() {
         return countryViewIsoCode;
     }

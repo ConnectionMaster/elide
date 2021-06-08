@@ -12,6 +12,8 @@ import com.yahoo.elide.annotation.ComputedAttribute;
 import com.yahoo.elide.annotation.ComputedRelationship;
 import com.yahoo.elide.annotation.Exclude;
 import com.yahoo.elide.annotation.LifeCycleHookBinding;
+import com.yahoo.elide.annotation.LifeCycleHookBinding.Operation;
+import com.yahoo.elide.annotation.LifeCycleHookBinding.TransactionPhase;
 import com.yahoo.elide.annotation.ToMany;
 import com.yahoo.elide.annotation.ToOne;
 import com.yahoo.elide.core.PersistentResource;
@@ -49,6 +51,7 @@ import javax.inject.Inject;
 import javax.persistence.AccessType;
 import javax.persistence.CascadeType;
 import javax.persistence.Column;
+import javax.persistence.EmbeddedId;
 import javax.persistence.GeneratedValue;
 import javax.persistence.Id;
 import javax.persistence.ManyToMany;
@@ -61,7 +64,7 @@ import javax.persistence.Transient;
 /**
  * Entity Dictionary maps JSON API Entity beans to/from Entity type names.
  *
- * @see com.yahoo.elide.annotation.Include#type
+ * @see com.yahoo.elide.annotation.Include#name
  */
 public class EntityBinding {
 
@@ -71,6 +74,7 @@ public class EntityBinding {
 
     @Getter
     public final Type<?> entityClass;
+    @Getter
     public final String jsonApiType;
     @Getter
     public boolean idGenerated;
@@ -102,20 +106,20 @@ public class EntityBinding {
     public final ConcurrentHashMap<String, String> relationshipToInverse = new ConcurrentHashMap<>();
     public final ConcurrentHashMap<String, CascadeType[]> relationshipToCascadeTypes = new ConcurrentHashMap<>();
     public final ConcurrentHashMap<String, AccessibleObject> fieldsToValues = new ConcurrentHashMap<>();
-    public final MultiValuedMap<Triple<String, LifeCycleHookBinding.Operation, LifeCycleHookBinding.TransactionPhase>,
-            LifeCycleHook> fieldTriggers = new HashSetValuedHashMap<>();
-    public final MultiValuedMap<Pair<LifeCycleHookBinding.Operation, LifeCycleHookBinding.TransactionPhase>,
-            LifeCycleHook> classTriggers = new HashSetValuedHashMap<>();
+    public final MultiValuedMap<Triple<String, Operation, TransactionPhase>, LifeCycleHook> fieldTriggers =
+            new HashSetValuedHashMap<>();
+    public final MultiValuedMap<Pair<Operation, TransactionPhase>, LifeCycleHook> classTriggers =
+            new HashSetValuedHashMap<>();
     public final ConcurrentHashMap<String, Type<?>> fieldsToTypes = new ConcurrentHashMap<>();
     public final ConcurrentHashMap<String, String> aliasesToFields = new ConcurrentHashMap<>();
     public final ConcurrentHashMap<Method, Boolean> requestScopeableMethods = new ConcurrentHashMap<>();
     public final ConcurrentHashMap<AccessibleObject, Set<ArgumentType>> attributeArguments = new ConcurrentHashMap<>();
+    public final ConcurrentHashMap<String, ArgumentType> entityArguments = new ConcurrentHashMap<>();
 
     public final ConcurrentHashMap<Object, Annotation> annotations = new ConcurrentHashMap<>();
 
     public static final EntityBinding EMPTY_BINDING = new EntityBinding();
     public static final Set<ArgumentType> EMPTY_ATTRIBUTES_ARGS = Collections.unmodifiableSet(new HashSet<>());
-    private static final String ALL_FIELDS = "*";
 
     /* empty binding constructor */
     private EntityBinding() {
@@ -169,7 +173,7 @@ public class EntityBinding {
         List<AccessibleObject> fieldOrMethodList = getAllFields();
         injected = shouldInject();
 
-        if (fieldOrMethodList.stream().anyMatch(field -> field.isAnnotationPresent(Id.class))) {
+        if (fieldOrMethodList.stream().anyMatch(EntityBinding::isIdField)) {
             accessType = AccessType.FIELD;
 
             /* Add all public methods that are computed OR life cycle hooks */
@@ -245,7 +249,7 @@ public class EntityBinding {
         return fields;
     }
 
-    private List<AccessibleObject> getAllMethods() {
+    public List<AccessibleObject> getAllMethods() {
         List<AccessibleObject> methods = new ArrayList<>();
 
         methods.addAll(getInstanceMembers(entityClass.getDeclaredMethods(), (method) -> !method.isSynthetic()));
@@ -270,7 +274,7 @@ public class EntityBinding {
         for (AccessibleObject fieldOrMethod : fieldOrMethodList) {
             bindTriggerIfPresent(fieldOrMethod);
 
-            if (fieldOrMethod.isAnnotationPresent(Id.class)) {
+            if (isIdField(fieldOrMethod)) {
                 bindEntityId(cls, type, fieldOrMethod);
             } else if (fieldOrMethod.isAnnotationPresent(Transient.class)
                     && !fieldOrMethod.isAnnotationPresent(ComputedAttribute.class)
@@ -510,12 +514,10 @@ public class EntityBinding {
     public static Type<?> getFieldType(Type<?> parentClass,
                                        AccessibleObject fieldOrMethod,
                                        Optional<Integer> index) {
-        Type type;
         if (fieldOrMethod instanceof Field) {
             return ((Field) fieldOrMethod).getParameterizedType(parentClass, index);
-        } else {
-            return ((Method) fieldOrMethod).getParameterizedReturnType(parentClass, index);
         }
+        return ((Method) fieldOrMethod).getParameterizedReturnType(parentClass, index);
     }
 
     private void bindTriggerIfPresent(AccessibleObject fieldOrMethod) {
@@ -531,11 +533,11 @@ public class EntityBinding {
         }
     }
 
-    public void bindTrigger(LifeCycleHookBinding.Operation operation,
-                            LifeCycleHookBinding.TransactionPhase phase,
+    public void bindTrigger(Operation operation,
+                            TransactionPhase phase,
                             String fieldOrMethodName,
                             LifeCycleHook hook) {
-        Triple<String, LifeCycleHookBinding.Operation, LifeCycleHookBinding.TransactionPhase> key =
+        Triple<String, Operation, TransactionPhase> key =
                 Triple.of(fieldOrMethodName, operation, phase);
 
         fieldTriggers.put(key, hook);
@@ -549,10 +551,10 @@ public class EntityBinding {
         bindTrigger(binding.operation(), binding.phase(), fieldOrMethodName, hook);
     }
 
-    public void bindTrigger(LifeCycleHookBinding.Operation operation,
-                            LifeCycleHookBinding.TransactionPhase phase,
+    public void bindTrigger(Operation operation,
+                            TransactionPhase phase,
                             LifeCycleHook hook) {
-        Pair<LifeCycleHookBinding.Operation, LifeCycleHookBinding.TransactionPhase> key =
+        Pair<Operation, TransactionPhase> key =
                 Pair.of(operation, phase);
 
         classTriggers.put(key, hook);
@@ -570,19 +572,19 @@ public class EntityBinding {
         bindTrigger(binding.operation(), binding.phase(), hook);
     }
 
-    public <A extends Annotation> Collection<LifeCycleHook> getTriggers(LifeCycleHookBinding.Operation op,
-                                                                        LifeCycleHookBinding.TransactionPhase phase,
-                                                                        String fieldName) {
-        Triple<String, LifeCycleHookBinding.Operation, LifeCycleHookBinding.TransactionPhase> key =
+    public Collection<LifeCycleHook> getTriggers(Operation op,
+            TransactionPhase phase,
+            String fieldName) {
+        Triple<String, Operation, TransactionPhase> key =
                 Triple.of(fieldName, op, phase);
         Collection<LifeCycleHook> bindings = fieldTriggers.get(key);
         return (bindings == null ? Collections.emptyList() : bindings);
     }
 
-    public <A extends Annotation> Collection<LifeCycleHook> getTriggers(LifeCycleHookBinding.Operation op,
-                                                                        LifeCycleHookBinding.TransactionPhase phase) {
+    public Collection<LifeCycleHook> getTriggers(Operation op,
+            TransactionPhase phase) {
 
-        Pair<LifeCycleHookBinding.Operation, LifeCycleHookBinding.TransactionPhase> key =
+        Pair<Operation, TransactionPhase> key =
                 Pair.of(op, phase);
         Collection<LifeCycleHook> bindings = classTriggers.get(key);
         return (bindings == null ? Collections.emptyList() : bindings);
@@ -591,12 +593,7 @@ public class EntityBinding {
     /**
      * Cache placeholder for no annotation.
      */
-    private static final Annotation NO_ANNOTATION = new Annotation() {
-        @Override
-        public Class<? extends Annotation> annotationType() {
-            return null;
-        }
-    };
+    private static final Annotation NO_ANNOTATION = () -> null;
 
     /**
      * Return annotation from class, parents or package.
@@ -691,5 +688,28 @@ public class EntityBinding {
         return (fieldObject != null)
                 ? attributeArguments.getOrDefault(fieldObject, EMPTY_ATTRIBUTES_ARGS)
                 : EMPTY_ATTRIBUTES_ARGS;
+    }
+
+    /**
+     * Add argument to this Entity.
+     * @param argument Argument Type for the attribute
+     */
+    public void addArgumentToEntity(ArgumentType argument) {
+        if (argument != null) {
+            //Replace any argument names with new value
+            entityArguments.put(argument.getName(), argument);
+        }
+    }
+
+    /**
+     * Returns the Collection of all attributes of an Entity.
+     * @return A Set of ArgumentType for the given entity.
+     */
+    public Set<ArgumentType> getEntityArguments() {
+        return new HashSet<>(entityArguments.values());
+    }
+
+    private static boolean isIdField(AccessibleObject field) {
+        return (field.isAnnotationPresent(Id.class) || field.isAnnotationPresent(EmbeddedId.class));
     }
 }

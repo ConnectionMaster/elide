@@ -10,11 +10,15 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
+import lombok.Singular;
 
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -32,8 +36,9 @@ import java.util.Set;
     "definition",
     "cardinality",
     "type",
-    "grain",
+    "grains",
     "tags",
+    "arguments",
     "values",
     "tableSource"
 })
@@ -41,6 +46,7 @@ import java.util.Set;
 @EqualsAndHashCode()
 @AllArgsConstructor
 @NoArgsConstructor
+@Builder
 public class Dimension implements Named {
 
     @JsonProperty("name")
@@ -70,19 +76,24 @@ public class Dimension implements Named {
     @JsonProperty("type")
     private Type type;
 
-    @JsonProperty("grain")
-    private Grain grain = new Grain();
+    @JsonProperty("grains")
+    @Singular
+    private List<Grain> grains = new ArrayList<>();
 
     @JsonProperty("tags")
     @JsonDeserialize(as = LinkedHashSet.class)
-    private Set<String> tags = new LinkedHashSet<String>();
+    private Set<String> tags = new LinkedHashSet<>();
+
+    @JsonProperty("arguments")
+    @Singular
+    private List<Argument> arguments = new ArrayList<>();
 
     @JsonProperty("values")
     @JsonDeserialize(as = LinkedHashSet.class)
-    private Set<String> values = new LinkedHashSet<String>();
+    private Set<String> values = new LinkedHashSet<>();
 
     @JsonProperty("tableSource")
-    private String tableSource;
+    private TableSource tableSource;
 
     /**
      * Returns description of the dimension.
@@ -91,5 +102,14 @@ public class Dimension implements Named {
      */
     public String getDescription() {
         return (this.description == null ? getName() : this.description);
+    }
+
+    /**
+     * Checks if this dimension has provided argument.
+     * @param argName Name of the {@link Argument} to  check for.
+     * @return true if this dimension has provided argument.
+     */
+    public boolean hasArgument(String argName) {
+        return hasName(this.arguments, argName);
     }
 }

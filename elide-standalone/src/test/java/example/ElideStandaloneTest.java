@@ -16,24 +16,17 @@ import static com.yahoo.elide.test.jsonapi.JsonApiDSL.resource;
 import static com.yahoo.elide.test.jsonapi.JsonApiDSL.type;
 import static io.restassured.RestAssured.given;
 import static io.restassured.RestAssured.when;
+import static org.hamcrest.CoreMatchers.containsString;
 import static org.hamcrest.CoreMatchers.equalTo;
+import static org.hamcrest.CoreMatchers.not;
 import static org.hamcrest.CoreMatchers.notNullValue;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import static org.hamcrest.Matchers.hasKey;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
-import com.yahoo.elide.ElideSettings;
-import com.yahoo.elide.ElideSettingsBuilder;
-import com.yahoo.elide.core.datastore.DataStore;
-import com.yahoo.elide.core.dictionary.EntityDictionary;
-import com.yahoo.elide.core.filter.dialect.RSQLFilterDialect;
-import com.yahoo.elide.datastores.aggregation.queryengines.sql.dialects.SQLDialectFactory;
-import com.yahoo.elide.jsonapi.links.DefaultJSONApiLinks;
+import static org.junit.jupiter.api.Assertions.assertNotEquals;
+
 import com.yahoo.elide.standalone.ElideStandalone;
-import com.yahoo.elide.standalone.config.ElideStandaloneAnalyticSettings;
-import com.yahoo.elide.standalone.config.ElideStandaloneAsyncSettings;
-import com.yahoo.elide.standalone.config.ElideStandaloneSettings;
-import example.models.Post;
+
 import org.apache.http.HttpStatus;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -41,8 +34,6 @@ import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
 import io.restassured.response.Response;
 
-import java.util.Properties;
-import java.util.TimeZone;
 import javax.ws.rs.core.MediaType;
 
 /**
@@ -54,134 +45,7 @@ public class ElideStandaloneTest {
 
     @BeforeAll
     public void init() throws Exception {
-        elide = new ElideStandalone(new ElideStandaloneSettings() {
-
-            @Override
-            public ElideSettings getElideSettings(EntityDictionary dictionary, DataStore dataStore) {
-                String jsonApiBaseUrl = getBaseUrl()
-                        + getJsonApiPathSpec().replaceAll("/\\*", "")
-                        + "/";
-
-                ElideSettingsBuilder builder = new ElideSettingsBuilder(dataStore)
-                        .withEntityDictionary(dictionary)
-                        .withJoinFilterDialect(new RSQLFilterDialect(dictionary))
-                        .withSubqueryFilterDialect(new RSQLFilterDialect(dictionary))
-                        .withJSONApiLinks(new DefaultJSONApiLinks(jsonApiBaseUrl))
-                        .withBaseUrl("https://elide.io")
-                        .withAuditLogger(getAuditLogger())
-                        .withJsonApiPath(getJsonApiPathSpec().replaceAll("/\\*", ""))
-                        .withGraphQLApiPath(getGraphQLApiPathSpec().replaceAll("/\\*", ""));
-
-                if (enableISO8601Dates()) {
-                    builder = builder.withISO8601Dates("yyyy-MM-dd'T'HH:mm'Z'", TimeZone.getTimeZone("UTC"));
-                }
-
-                return builder.build();
-            }
-
-            @Override
-            public String getBaseUrl() {
-                return "https://elide.io";
-            }
-
-            @Override
-            public Properties getDatabaseProperties() {
-                Properties options = new Properties();
-
-                options.put("hibernate.show_sql", "true");
-                options.put("hibernate.hbm2ddl.auto", "create");
-                options.put("hibernate.dialect", "org.hibernate.dialect.H2Dialect");
-                options.put("hibernate.current_session_context_class", "thread");
-                options.put("hibernate.jdbc.use_scrollable_resultset", "true");
-
-                options.put("javax.persistence.jdbc.driver", "org.h2.Driver");
-                options.put("javax.persistence.jdbc.url", "jdbc:h2:mem:db1;DB_CLOSE_DELAY=-1;");
-                options.put("javax.persistence.jdbc.user", "sa");
-                options.put("javax.persistence.jdbc.password", "");
-                return options;
-            }
-
-            @Override
-            public String getModelPackageName() {
-                return Post.class.getPackage().getName();
-            }
-
-            @Override
-            public boolean enableSwagger() {
-                return true;
-            }
-            @Override
-            public boolean enableGraphQL() {
-                return true;
-            }
-
-            @Override
-            public boolean enableJSONAPI() {
-                return true;
-            }
-
-            @Override
-            public ElideStandaloneAsyncSettings getAsyncProperties() {
-                ElideStandaloneAsyncSettings asyncPropeties = new ElideStandaloneAsyncSettings() {
-                    @Override
-                    public boolean enabled() {
-                        return true;
-                    }
-
-                    @Override
-                    public boolean enableCleanup() {
-                        return true;
-                    }
-
-                    @Override
-                    public Integer getThreadSize() {
-                        return 5;
-                    }
-
-                    @Override
-                    public Integer getMaxRunTimeSeconds() {
-                        return 1800;
-                    }
-
-                    @Override
-                    public Integer getQueryCleanupDays() {
-                        return 3;
-                    }
-                };
-                return asyncPropeties;
-            }
-
-            @Override
-            public ElideStandaloneAnalyticSettings getAnalyticProperties() {
-                ElideStandaloneAnalyticSettings analyticPropeties = new ElideStandaloneAnalyticSettings() {
-                    @Override
-                    public boolean enableDynamicModelConfig() {
-                        return true;
-                    }
-
-                    @Override
-                    public boolean enableAggregationDataStore() {
-                        return true;
-                    }
-
-                    @Override
-                    public boolean enableMetaDataStore() {
-                        return true;
-                    }
-
-                    @Override
-                    public String getDefaultDialect() {
-                        return SQLDialectFactory.getDefaultDialect().getDialectType();
-                    }
-
-                    @Override
-                    public String getDynamicConfigPath() {
-                        return "src/test/resources/configs/";
-                    }
-                };
-                return analyticPropeties;
-            }
-        });
+        elide = new ElideStandalone(new ElideStandaloneTestSettings());
         elide.start(false);
     }
 
@@ -210,8 +74,7 @@ public class ElideStandaloneTest {
             .post("/api/v1/post")
             .then()
 
-            .statusCode(HttpStatus.SC_CREATED)
-            .extract().body().asString();
+            .statusCode(HttpStatus.SC_CREATED);
 
         // Test the Dynamic Generated Analytical Model is accessible
         given()
@@ -256,8 +119,7 @@ public class ElideStandaloneTest {
                 )
                 .post("/api/v1/post")
                 .then()
-                .statusCode(HttpStatus.SC_CREATED)
-                .extract().body().asString();
+                .statusCode(HttpStatus.SC_CREATED);
     }
 
     @Test
@@ -280,8 +142,7 @@ public class ElideStandaloneTest {
             )
             .post("/api/v1/post")
             .then()
-            .statusCode(HttpStatus.SC_FORBIDDEN)
-            .extract().body().asString();
+            .statusCode(HttpStatus.SC_FORBIDDEN);
     }
 
     @Test
@@ -318,9 +179,9 @@ public class ElideStandaloneTest {
                .get("/swagger/doc/test")
                 .then()
                 .statusCode(200)
-                .body("tags.name", containsInAnyOrder("post", "functionArgument", "metric",
-                        "metricFunction", "dimension", "column", "table", "asyncQuery",
-                        "timeDimensionGrain", "timeDimension", "postView", "tableExport"));
+                .body("tags.name", containsInAnyOrder("post", "argument", "metric",
+                        "dimension", "column", "table", "asyncQuery",
+                        "timeDimensionGrain", "timeDimension", "postView", "namespace", "tableSource"));
     }
 
     @Test
@@ -395,15 +256,39 @@ public class ElideStandaloneTest {
                 String expectedResponse = "{\"data\":{\"asyncQuery\":{\"edges\":[{\"node\":{\"id\":\"ba31ca4e-ed8f-4be0-a0f3-12088fa9263d\",\"queryType\":\"JSONAPI_V1_0\",\"status\":\"COMPLETE\",\"result\":{\"responseBody\":\"{\\\"data\\\":[{\\\"type\\\":\\\"post\\\",\\\"id\\\":\\\"2\\\",\\\"attributes\\\":{\\\"abusiveContent\\\":false,\\\"content\\\":\\\"This is my first post. woot.\\\",\\\"date\\\":\\\"2019-01-01T00:00Z\\\"},\\\"links\\\":{\\\"self\\\":\\\"https://elide.io/api/v1/post/2\\\"}}]}\",\"httpStatus\":200,\"contentLength\":191}}}]}}}";
                 assertEquals(expectedResponse, responseGraphQL);
                 break;
-            } else if (!(outputResponse.equals("PROCESSING"))) {
-                fail("Async Query has failed.");
-                break;
             }
+            assertEquals("PROCESSING", outputResponse, "Async Query has failed.");
             i++;
-
-            if (i == 1000) {
-                fail("Async Query not completed.");
-            }
+            assertNotEquals(1000, i, "Async Query not completed.");
         }
+    }
+
+    // Resource disabled by default.
+    @Test
+    public void exportResourceDisabledTest() throws InterruptedException {
+        // elide-standalone returns different error message when export resource is not initialized
+        // vs when it could not find a matching id to export.
+        // Jetty seems to have a different behavior than spring-framework for non-existent resources.
+        // Post call to a non-existent resource returns 405 in jetty, spring-framework returns 404.
+        // Spring-framework behaved similar to Jetty,
+        // but was changed with https://github.com/spring-projects/spring-boot/issues/4876.
+        int queryId = 1;
+        when()
+                .get("/export/" + queryId)
+                .then()
+                .statusCode(HttpStatus.SC_NOT_FOUND)
+                .body(containsString(" Not Found"))
+                .body(not(containsString(queryId + " Not Found")));
+    }
+
+    @Test
+    public void metaDataTest() {
+        given()
+                .accept("application/vnd.api+json")
+                .get("/api/v1/namespace/default") //"default" namespace added by Agg Store
+                .then()
+                .statusCode(HttpStatus.SC_OK)
+                .body("data.attributes.name", equalTo("default"))
+                .body("data.attributes.friendlyName", equalTo("default"));
     }
 }

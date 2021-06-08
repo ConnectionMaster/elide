@@ -22,10 +22,17 @@ import com.yahoo.elide.core.security.executors.ActivePermissionExecutor;
 import com.yahoo.elide.core.security.executors.VerbosePermissionExecutor;
 import com.yahoo.elide.core.utils.coerce.converters.EpochToDateConverter;
 import com.yahoo.elide.core.utils.coerce.converters.ISO8601DateSerde;
+import com.yahoo.elide.core.utils.coerce.converters.InstantSerde;
+import com.yahoo.elide.core.utils.coerce.converters.OffsetDateTimeSerde;
 import com.yahoo.elide.core.utils.coerce.converters.Serde;
+import com.yahoo.elide.core.utils.coerce.converters.TimeZoneSerde;
+import com.yahoo.elide.core.utils.coerce.converters.URLSerde;
 import com.yahoo.elide.jsonapi.JsonApiMapper;
 import com.yahoo.elide.jsonapi.links.JSONApiLinks;
 
+import java.net.URL;
+import java.time.Instant;
+import java.time.OffsetDateTime;
 import java.util.ArrayList;
 import java.util.Date;
 import java.util.HashMap;
@@ -56,6 +63,7 @@ public class ElideSettingsBuilder {
     private String baseUrl = "";
     private String jsonApiPath;
     private String graphQLApiPath;
+    private String exportApiPath;
 
     /**
      * A new builder used to generate Elide instances. Instantiates an {@link EntityDictionary} without
@@ -75,6 +83,7 @@ public class ElideSettingsBuilder {
 
         //By default, Elide supports epoch based dates.
         this.withEpochDates();
+        this.withDefaultSerdes();
     }
 
     public ElideSettings build() {
@@ -110,7 +119,8 @@ public class ElideSettingsBuilder {
                 strictQueryParams,
                 baseUrl,
                 jsonApiPath,
-                graphQLApiPath);
+                graphQLApiPath,
+                exportApiPath);
     }
 
     public ElideSettingsBuilder withAuditLogger(AuditLogger auditLogger) {
@@ -187,10 +197,18 @@ public class ElideSettingsBuilder {
     }
 
     public ElideSettingsBuilder withEpochDates() {
-        serdes.put(Date.class, new EpochToDateConverter<Date>(Date.class));
-        serdes.put(java.sql.Date.class, new EpochToDateConverter<java.sql.Date>(java.sql.Date.class));
-        serdes.put(java.sql.Time.class, new EpochToDateConverter<java.sql.Time>(java.sql.Time.class));
-        serdes.put(java.sql.Timestamp.class, new EpochToDateConverter<java.sql.Timestamp>(java.sql.Timestamp.class));
+        serdes.put(Date.class, new EpochToDateConverter<>(Date.class));
+        serdes.put(java.sql.Date.class, new EpochToDateConverter<>(java.sql.Date.class));
+        serdes.put(java.sql.Time.class, new EpochToDateConverter<>(java.sql.Time.class));
+        serdes.put(java.sql.Timestamp.class, new EpochToDateConverter<>(java.sql.Timestamp.class));
+        return this;
+    }
+
+    public ElideSettingsBuilder withDefaultSerdes() {
+        serdes.put(Instant.class, new InstantSerde());
+        serdes.put(OffsetDateTime.class, new OffsetDateTimeSerde());
+        serdes.put(TimeZone.class, new TimeZoneSerde());
+        serdes.put(URL.class, new URLSerde());
         return this;
     }
 
@@ -207,6 +225,11 @@ public class ElideSettingsBuilder {
 
     public ElideSettingsBuilder withGraphQLApiPath(String graphQLApiPath) {
         this.graphQLApiPath = graphQLApiPath;
+        return this;
+    }
+
+    public ElideSettingsBuilder withExportApiPath(String exportApiPath) {
+        this.exportApiPath = exportApiPath;
         return this;
     }
 

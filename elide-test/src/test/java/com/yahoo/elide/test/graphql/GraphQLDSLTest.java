@@ -32,6 +32,28 @@ public class GraphQLDSLTest {
     }
 
     @Test
+    public void verifyFieldAliases() {
+        String expected = "{book {edges {node {id shortTitle: title(format: short) longTitle: title(format: long)}}}}";
+        String actual = GraphQLDSL.document(
+                GraphQLDSL.selection(
+                        GraphQLDSL.field(
+                                "book",
+                                GraphQLDSL.selections(
+                                        GraphQLDSL.field("id"),
+                                        GraphQLDSL.field("title", "shortTitle", GraphQLDSL.arguments(
+                                                GraphQLDSL.argument("format", "short")
+                                        )),
+                                        GraphQLDSL.field("title", "longTitle", GraphQLDSL.arguments(
+                                                GraphQLDSL.argument("format", "long")
+                                        ))
+                                )
+                        )
+                )
+        ).toQuery();
+        assertEquals(expected, actual);
+    }
+
+    @Test
     public void verifyMultipleTopLevelEntitiesSelection() {
         String expected = "{book {edges {node {user1SecretField}}} book {edges {node {id title}}}}";
         String actual = GraphQLDSL.document(
@@ -202,7 +224,7 @@ public class GraphQLDSLTest {
         assertEquals(expected, actual);
     }
 
-    /**************************************** Response DSL ****************************************/
+    /**************************************** Response DSL. ****************************************/
 
     @Test
     public void verifyBasicResponse() {

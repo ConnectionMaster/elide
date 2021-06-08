@@ -19,10 +19,10 @@ import javax.persistence.FetchType;
 import javax.persistence.ManyToOne;
 
 @Entity
-@Include(type = "specialread")
+@Include(name = "specialread")
 @ReadPermission(expression = "specialValue")
 @UpdatePermission(expression = "Prefab.Role.None")
-@CreatePermission(expression = "allow all")
+@CreatePermission(expression = "Prefab.Role.All")
 public class SpecialRead extends BaseId {
     private String value;
     private Child child;

@@ -7,11 +7,14 @@ package com.yahoo.elide.datastores.aggregation;
 
 import com.yahoo.elide.core.RequestScope;
 import com.yahoo.elide.core.datastore.DataStoreTransaction;
+import com.yahoo.elide.core.dictionary.EntityDictionary;
 import com.yahoo.elide.core.exceptions.BadRequestException;
 import com.yahoo.elide.core.exceptions.HttpStatus;
 import com.yahoo.elide.core.exceptions.HttpStatusException;
+import com.yahoo.elide.core.exceptions.InvalidOperationException;
 import com.yahoo.elide.core.filter.expression.FilterExpression;
 import com.yahoo.elide.core.request.EntityProjection;
+import com.yahoo.elide.core.type.Type;
 import com.yahoo.elide.datastores.aggregation.cache.Cache;
 import com.yahoo.elide.datastores.aggregation.cache.QueryKeyExtractor;
 import com.yahoo.elide.datastores.aggregation.core.QueryLogger;
@@ -49,12 +52,12 @@ public class AggregationDataStoreTransaction implements DataStoreTransaction {
 
     @Override
     public <T> void save(T entity, RequestScope scope) {
-
+        throwReadOnlyException(entity);
     }
 
     @Override
     public <T> void delete(T entity, RequestScope scope) {
-
+        throwReadOnlyException(entity);
     }
 
     @Override
@@ -69,7 +72,7 @@ public class AggregationDataStoreTransaction implements DataStoreTransaction {
 
     @Override
     public <T> void createObject(T entity, RequestScope scope) {
-
+        throwReadOnlyException(entity);
     }
 
     @Override
@@ -90,7 +93,7 @@ public class AggregationDataStoreTransaction implements DataStoreTransaction {
                 result = cache.get(cacheKey);
             }
 
-            boolean isCached = result == null ? false : true;
+            boolean isCached = result != null;
             List<String> queryText = queryEngine.explain(query);
             queryLogger.processQuery(scope.getRequestId(), query, queryText, isCached);
             if (result == null) {
@@ -126,12 +129,13 @@ public class AggregationDataStoreTransaction implements DataStoreTransaction {
                 scope.getDictionary().getJsonAliasFor(entityProjection.getType()),
                 scope.getApiVersion());
         String bypassCacheStr = scope.getRequestHeaderByName("bypasscache");
-        Boolean bypassCache = (bypassCacheStr != null && bypassCacheStr.equals("true")) ? true : false;
+        Boolean bypassCache = "true".equals(bypassCacheStr);
+
         EntityProjectionTranslator translator = new EntityProjectionTranslator(
                 queryEngine,
                 table,
                 entityProjection,
-                scope.getDictionary(),
+                scope,
                 bypassCache);
 
         Query query = translator.getQuery();
@@ -139,7 +143,7 @@ public class AggregationDataStoreTransaction implements DataStoreTransaction {
         FilterExpression filterTemplate = table.getRequiredFilter(scope.getDictionary());
         if (filterTemplate != null && ! MatchesTemplateVisitor.isValid(filterTemplate, query.getWhereFilter())) {
             String message = String.format("Querying %s requires a mandatory filter: %s",
-                        table.getName(), table.getRequiredFilter().toString());
+                        table.getName(), table.getRequiredFilter());
 
             throw new BadRequestException(message);
         }
@@ -151,5 +155,11 @@ public class AggregationDataStoreTransaction implements DataStoreTransaction {
     public void cancel(RequestScope scope) {
         queryLogger.cancelQuery(scope.getRequestId());
         queryEngineTransaction.cancel();
+    }
+
+    private <T> void throwReadOnlyException(T entity) {
+        EntityDictionary dictionary = metaDataStore.getMetadataDictionary();
+        Type<?> type  = dictionary.getType(entity);
+        throw new InvalidOperationException(dictionary.getJsonAliasFor(type) + " is read only.");
     }
 }

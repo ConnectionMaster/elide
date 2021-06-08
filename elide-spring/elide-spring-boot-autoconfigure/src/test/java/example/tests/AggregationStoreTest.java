@@ -15,7 +15,7 @@ import static io.restassured.RestAssured.given;
 import static io.restassured.RestAssured.when;
 import static junit.framework.TestCase.assertFalse;
 import static junit.framework.TestCase.assertTrue;
-import static org.hamcrest.Matchers.equalTo;
+import static org.hamcrest.CoreMatchers.equalTo;
 import com.yahoo.elide.core.exceptions.HttpStatus;
 import org.junit.jupiter.api.Test;
 import org.springframework.beans.factory.annotation.Autowired;
@@ -29,18 +29,19 @@ import java.util.Map;
 /**
  * Example functional tests for Aggregation Store.
  */
+@Sql(
+        executionPhase = Sql.ExecutionPhase.BEFORE_TEST_METHOD,
+        scripts = "classpath:db/test_init.sql",
+        statements = {
+                "INSERT INTO Stats (id, measure, dimension) VALUES\n"
+                    + "\t\t(1,100,'Foo'),"
+                    + "\t\t(2,150,'Bar');"
+})
 public class AggregationStoreTest extends IntegrationTest {
     /**
      * This test demonstrates an example test using the aggregation store.
      */
     @Test
-    @Sql(statements = {
-            "DROP TABLE Stats IF EXISTS;",
-            "CREATE TABLE Stats(id int, measure int, dimension VARCHAR(255));",
-            "INSERT INTO Stats (id, measure, dimension) VALUES\n"
-                    + "\t\t(1,100,'Foo'),"
-                    + "\t\t(2,150,'Bar');"
-    })
     public void jsonApiGetTestNoHeader(@Autowired MeterRegistry metrics) {
         when()
                 .get("/json/stats?fields[stats]=measure")
@@ -82,13 +83,6 @@ public class AggregationStoreTest extends IntegrationTest {
      * This test demonstrates an example test using the aggregation store.
      */
     @Test
-    @Sql(statements = {
-            "DROP TABLE Stats IF EXISTS;",
-            "CREATE TABLE Stats(id int, measure int, dimension VARCHAR(255));",
-            "INSERT INTO Stats (id, measure, dimension) VALUES\n"
-                    + "\t\t(1,100,'Foo'),"
-                    + "\t\t(2,150,'Bar');"
-    })
     public void jsonApiGetTest(@Autowired MeterRegistry metrics) {
         Map<String, String> requestHeaders = new HashMap<>();
          requestHeaders.put("bypassCache", "true");
@@ -129,5 +123,16 @@ public class AggregationStoreTest extends IntegrationTest {
                 .get("cache.gets")
                 .tags("cache", "elideQueryCache", "result", "hit")
                 .functionCounter().count() > 0);
+    }
+
+    @Test
+    public void metaDataTest() {
+        given()
+                .accept("application/vnd.api+json")
+                .get("/json/namespace/default") //"default" namespace added by Agg Store
+                .then()
+                .statusCode(HttpStatus.SC_OK)
+                .body("data.attributes.name", equalTo("default"))
+                .body("data.attributes.friendlyName", equalTo("default"));
     }
 }

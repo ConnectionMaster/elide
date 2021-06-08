@@ -28,7 +28,7 @@ import javax.persistence.OneToOne;
 @Entity(name = "childEntity")
 @CreatePermission(expression = "initCheck")
 @ReadPermission(expression = "negativeChildId AND negativeIntegerUser AND initCheck")
-@Include(type = "child")
+@Include(name = "child")
 @Audit(action = Audit.Action.DELETE,
        operation = 0,
        logStatement = "DELETE Child {0} Parent {1}",
@@ -112,10 +112,7 @@ public class Child {
     static public class InitCheck extends OperationCheck<Child> {
         @Override
         public boolean ok(Child child, RequestScope requestScope, Optional<ChangeSpec> changeSpec) {
-            if (child.getParents() != null) {
-                return true;
-            }
-            return false;
+            return child.getParents() != null;
         }
     }
 }

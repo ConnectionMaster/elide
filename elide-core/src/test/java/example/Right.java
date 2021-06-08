@@ -21,7 +21,7 @@ import javax.persistence.OneToOne;
 import javax.persistence.Table;
 
 
-@Include(type = "right") // optional here because class has this name
+@Include(name = "right") // optional here because class has this name
 @UpdatePermission(expression = "Prefab.Role.None")
 @Entity
 @Table(name = "xright")     // right is SQL keyword
@@ -38,7 +38,7 @@ public class Right {
             cascade = { CascadeType.PERSIST, CascadeType.MERGE },
             targetEntity = Left.class
     )
-    @UpdatePermission(expression = "allow all")
+    @UpdatePermission(expression = "Prefab.Role.All")
     public Left getOne2one() {
         return one2one;
     }
@@ -98,7 +98,7 @@ public class Right {
     @ManyToMany(
             cascade = { CascadeType.PERSIST, CascadeType.MERGE }
     )
-    @UpdatePermission(expression = "allow all")
+    @UpdatePermission(expression = "Prefab.Role.All")
     public Set<Left> getAllowDeleteAtFieldLevel() {
         return allowDeleteAtFieldLevel;
     }

@@ -22,7 +22,7 @@ import javax.ws.rs.core.MultivaluedHashMap;
 import javax.ws.rs.core.MultivaluedMap;
 
 /**
- * Tests filter query parameter parsing for the default Elide implementation (1.0 and 2.0)
+ * Tests filter query parameter parsing for the default Elide implementation (1.0 and 2.0).
  */
 public class DefaultFilterDialectTest {
 
@@ -30,7 +30,7 @@ public class DefaultFilterDialectTest {
 
     @BeforeAll
     public static void init() {
-        EntityDictionary dictionary = new EntityDictionary(Collections.EMPTY_MAP);
+        EntityDictionary dictionary = new EntityDictionary(Collections.emptyMap());
 
         dictionary.bindEntity(Author.class);
         dictionary.bindEntity(Book.class);
@@ -133,6 +133,21 @@ public class DefaultFilterDialectTest {
     }
 
     @Test
+    public void testBetweenOperator() throws Exception {
+        MultivaluedMap<String, String> queryParams = new MultivaluedHashMap<>();
+
+        queryParams.add(
+                "filter[author.books.id][between]",
+                "10,20"
+        );
+
+        Map<String, FilterExpression> expressionMap = dialect.parseTypedExpression("/author", queryParams, NO_VERSION);
+
+        assertEquals(1, expressionMap.size());
+        assertEquals("author.books.id BETWEEN [10, 20]", expressionMap.get("author").toString());
+    }
+
+    @Test
     public void testEmptyOperatorException() throws Exception {
         MultivaluedMap<String, String> queryParams = new MultivaluedHashMap<>();
 
@@ -160,7 +175,7 @@ public class DefaultFilterDialectTest {
     }
 
     @Test
-    public void testMemberOfOperatorException() throws Exception {
+    public void testMemberOfToManyRelationship() throws Exception {
         MultivaluedMap<String, String> queryParams = new MultivaluedHashMap<>();
 
         queryParams.add(
@@ -168,16 +183,40 @@ public class DefaultFilterDialectTest {
                 "name"
         );
 
-        assertThrows(ParseException.class,
-                () -> dialect.parseTypedExpression("/book", queryParams, NO_VERSION));
+        Map<String, FilterExpression> expressionMap = dialect.parseTypedExpression("/book", queryParams,
+                NO_VERSION);
 
-        queryParams.clear();
+        assertEquals(1, expressionMap.size());
+        assertEquals("book.authors.name HASMEMBER [name]", expressionMap.get("book").toString());
+    }
+
+    @Test
+    public void testMemberOfOperatorOnNonCollectionAttributeException() throws Exception {
+        MultivaluedMap<String, String> queryParams = new MultivaluedHashMap<>();
         queryParams.add(
                 "filter[book.title][hasmember]",
                 "title"
         );
 
-        assertThrows(ParseException.class,
+        ParseException e = assertThrows(ParseException.class,
                 () -> dialect.parseTypedExpression("/book", queryParams, NO_VERSION));
+
+        assertEquals("Invalid Path: Last Path Element has to be a collection type", e.getMessage());
+    }
+
+    @Test
+    public void testMemberOfOperatorOnRelationshipException() throws Exception {
+        MultivaluedMap<String, String> queryParams = new MultivaluedHashMap<>();
+
+        queryParams.clear();
+        queryParams.add(
+                "filter[book.authors][hasmember]",
+                "1"
+        );
+
+        ParseException e = assertThrows(ParseException.class,
+                () -> dialect.parseTypedExpression("/book", queryParams, NO_VERSION));
+
+        assertEquals("Invalid Path: Last Path Element cannot be a collection type", e.getMessage());
     }
 }

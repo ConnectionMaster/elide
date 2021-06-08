@@ -66,9 +66,7 @@ public class DefaultAsyncAPIDAO implements AsyncAPIDAO {
     @Override
     public <T extends AsyncAPI> Iterable<T> updateStatusAsyncAPIByFilter(FilterExpression filterExpression,
             QueryStatus status, Class<T> type) {
-        return updateAsyncAPIIterable(filterExpression, (asyncAPI) -> {
-            asyncAPI.setStatus(status);
-            }, type);
+        return updateAsyncAPIIterable(filterExpression, asyncAPI -> asyncAPI.setStatus(status), type);
     }
 
     /**
@@ -165,14 +163,14 @@ public class DefaultAsyncAPIDAO implements AsyncAPIDAO {
         Object result = null;
         try (DataStoreTransaction tx = dataStore.beginTransaction()) {
             JsonApiDocument jsonApiDoc = new JsonApiDocument();
-            MultivaluedMap<String, String> queryParams = new MultivaluedHashMap<String, String>();
+            MultivaluedMap<String, String> queryParams = new MultivaluedHashMap<>();
             RequestScope scope = new RequestScope("", "query", NO_VERSION, jsonApiDoc,
                     tx, null, queryParams, Collections.emptyMap(), UUID.randomUUID(), elideSettings);
             result = action.execute(tx, scope);
             tx.flush(scope);
             tx.commit(scope);
         } catch (IOException e) {
-            log.error("IOException: {}", e);
+            log.error("IOException: {}", e.toString());
             throw new IllegalStateException(e);
         }
         return result;
@@ -191,11 +189,10 @@ public class DefaultAsyncAPIDAO implements AsyncAPIDAO {
                         .type(type)
                         .filterExpression(filterExpression)
                         .build();
-                Iterable<Object> loaded = tx.loadObjects(asyncAPIIterable, scope);
-                return loaded;
+                return tx.loadObjects(asyncAPIIterable, scope);
             });
         } catch (Exception e) {
-            log.error("Exception: {}", e);
+            log.error("Exception: {}", e.toString());
             throw new IllegalStateException(e);
         }
         return asyncAPIList;

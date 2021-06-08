@@ -15,6 +15,8 @@ import com.yahoo.elide.core.filter.visitors.FilterExpressionNormalizationVisitor
 import com.google.common.base.Preconditions;
 import lombok.AllArgsConstructor;
 
+import java.util.regex.Pattern;
+
 /**
  * Validates whether a client provided filter either:
  * 1. Directly matches a template filter.
@@ -23,40 +25,30 @@ import lombok.AllArgsConstructor;
  */
 @AllArgsConstructor
 public class MatchesTemplateVisitor implements FilterExpressionVisitor<Boolean> {
-    private static final String TEMPLATE_REGEX = "\\{\\{\\w+}\\}";
+    private static final Pattern TEMPLATE_PATTERN = Pattern.compile("\\{\\{\\w*\\}\\}");
 
     private FilterExpression expressionToMatch;
 
     @Override
     public Boolean visitPredicate(FilterPredicate filterPredicate) {
-        if (matches(expressionToMatch, filterPredicate)) {
-            return true;
-        }
-        return false;
+        return matches(expressionToMatch, filterPredicate);
     }
 
     @Override
     public Boolean visitAndExpression(AndFilterExpression expression) {
-        if (matches(expressionToMatch, expression)) {
-            return true;
-        }
-        return expression.getLeft().accept(this) || expression.getRight().accept(this);
+        return matches(expressionToMatch, expression)
+                || expression.getLeft().accept(this)
+                || expression.getRight().accept(this);
     }
 
     @Override
     public Boolean visitOrExpression(OrFilterExpression expression) {
-        if (matches(expressionToMatch, expression)) {
-            return true;
-        }
-        return false;
+        return matches(expressionToMatch, expression);
     }
 
     @Override
     public Boolean visitNotExpression(NotFilterExpression expression) {
-        if (matches(expressionToMatch, expression)) {
-            return true;
-        }
-        return false;
+        return matches(expressionToMatch, expression);
     }
 
     private static boolean matches(FilterExpression a, FilterExpression b) {
@@ -69,28 +61,29 @@ public class MatchesTemplateVisitor implements FilterExpressionVisitor<Boolean> 
             AndFilterExpression andB = (AndFilterExpression) b;
 
             return matches(andA.getLeft(), andB.getLeft()) && matches(andA.getRight(), andB.getRight());
-        } else if (a instanceof OrFilterExpression) {
+        }
+        if (a instanceof OrFilterExpression) {
             OrFilterExpression orA = (OrFilterExpression) a;
             OrFilterExpression orB = (OrFilterExpression) b;
 
             return matches(orA.getLeft(), orB.getLeft()) && matches(orA.getRight(), orB.getRight());
-        } else if (a instanceof NotFilterExpression) {
+        }
+        if (a instanceof NotFilterExpression) {
             NotFilterExpression notA = (NotFilterExpression) a;
             NotFilterExpression notB = (NotFilterExpression) b;
 
             return matches(notA.getNegated(), notB.getNegated());
-        } else {
-            FilterPredicate predicateA = (FilterPredicate) a;
-            FilterPredicate predicateB = (FilterPredicate) b;
-
-            boolean valueMatches = predicateA.getValues().equals(predicateB.getValues());
-            boolean usingTemplate = predicateA.getValues().stream()
-                    .anyMatch((value -> value.toString().matches(TEMPLATE_REGEX)));
-
-            return predicateA.getPath().equals(predicateB.getPath())
-                    && predicateA.getOperator().equals(predicateB.getOperator())
-                    && (usingTemplate || valueMatches);
         }
+        FilterPredicate predicateA = (FilterPredicate) a;
+        FilterPredicate predicateB = (FilterPredicate) b;
+
+        boolean valueMatches = predicateA.getValues().equals(predicateB.getValues());
+        boolean usingTemplate = predicateA.getValues().stream()
+                .anyMatch(value -> TEMPLATE_PATTERN.matcher(value.toString()).matches());
+
+        return predicateA.getPath().equals(predicateB.getPath())
+                && predicateA.getOperator().equals(predicateB.getOperator())
+                && (usingTemplate || valueMatches);
     }
 
     /**

@@ -11,12 +11,15 @@ import com.yahoo.elide.core.dictionary.EntityDictionary;
 import com.yahoo.elide.core.exceptions.BadRequestException;
 import com.yahoo.elide.core.request.Argument;
 import com.yahoo.elide.core.type.Type;
+import com.yahoo.elide.datastores.aggregation.dynamic.NamespacePackage;
 import com.yahoo.elide.datastores.aggregation.metadata.MetaDataStore;
 import com.yahoo.elide.datastores.aggregation.metadata.models.Dimension;
 import com.yahoo.elide.datastores.aggregation.metadata.models.Metric;
+import com.yahoo.elide.datastores.aggregation.metadata.models.Namespace;
 import com.yahoo.elide.datastores.aggregation.metadata.models.Table;
+import com.yahoo.elide.datastores.aggregation.metadata.models.TableSource;
 import com.yahoo.elide.datastores.aggregation.metadata.models.TimeDimension;
-import com.yahoo.elide.datastores.aggregation.query.ColumnProjection;
+import com.yahoo.elide.datastores.aggregation.query.DimensionProjection;
 import com.yahoo.elide.datastores.aggregation.query.MetricProjection;
 import com.yahoo.elide.datastores.aggregation.query.Query;
 import com.yahoo.elide.datastores.aggregation.query.QueryResult;
@@ -25,6 +28,7 @@ import lombok.Getter;
 
 import java.util.List;
 import java.util.Map;
+
 /**
  * A {@link QueryEngine} is an abstraction that an AggregationDataStore leverages to run analytic queries (OLAP style)
  * against an underlying persistence layer.
@@ -85,31 +89,45 @@ public abstract class QueryEngine {
     }
 
     /**
+     * Construct namespace metadata.
+     *
+     * @param namespacePackage NamespacePackage Type
+     * @return constructed Namespace
+     */
+    protected abstract Namespace constructNamespace(NamespacePackage namespacePackage);
+
+    /**
+     *
      * Construct Table metadata for an entity.
      *
+     * @param namespace The table namespace
      * @param entityClass entity class
      * @param metaDataDictionary metadata dictionary
      * @return constructed Table
      */
-    protected abstract Table constructTable(Type<?> entityClass, EntityDictionary metaDataDictionary);
+    protected abstract Table constructTable (
+            Namespace namespace,
+            Type<?> entityClass,
+            EntityDictionary metaDataDictionary
+    );
 
     /**
      * Construct a parameterized instance of a Column.
      * @param dimension The dimension column.
      * @param alias The client provide alias.
      * @param arguments The client provided parameterized arguments.
-     * @return
+     * @return DimensionProjection
      */
-    public abstract ColumnProjection constructDimensionProjection(Dimension dimension,
-                                                                  String alias,
-                                                                  Map<String, Argument> arguments);
+    public abstract DimensionProjection constructDimensionProjection(Dimension dimension,
+                                                                     String alias,
+                                                                     Map<String, Argument> arguments);
 
     /**
      * Construct a parameterized instance of a Column.
      * @param dimension The dimension column.
      * @param alias The client provide alias.
      * @param arguments The client provided parameterized arguments.
-     * @return
+     * @return TimeDimensionProjection
      */
     public abstract TimeDimensionProjection constructTimeDimensionProjection(TimeDimension dimension,
                                                                              String alias,
@@ -119,7 +137,7 @@ public abstract class QueryEngine {
      * @param metric The metric column.
      * @param alias The client provide alias.
      * @param arguments The client provided parameterized arguments.
-     * @return
+     * @return MetricProjection
      */
     public abstract MetricProjection constructMetricProjection(Metric metric,
                                                                String alias,
@@ -131,6 +149,10 @@ public abstract class QueryEngine {
      * @param metaDataStore metadata store to populate
      */
     protected void populateMetaData(MetaDataStore metaDataStore) {
+        metaDataStore.getNamespacesToBind().stream()
+                .map(this::constructNamespace)
+                .forEach(metaDataStore::addNamespace);
+
         metaDataStore.getModelsToBind()
                 .forEach(model -> {
                     if (!metadataDictionary.isJPAEntity(model)
@@ -140,11 +162,49 @@ public abstract class QueryEngine {
                     }
                 });
 
-
         metaDataStore.getModelsToBind().stream()
-                .map(model -> constructTable(model, metadataDictionary))
+                .map(model -> constructTable(metaDataStore.getNamespace(model), model, metadataDictionary))
                 .forEach(metaDataStore::addTable);
+
+        //Populate table sources.
+        metaDataStore.getTables().forEach(table -> {
+            table.getArgumentDefinitions().forEach(argument -> {
+                argument.setTableSource(TableSource.fromDefinition(
+                        argument.getTableSourceDefinition(),
+                        table.getVersion(),
+                        metaDataStore
+                ));
+            });
+
+            table.getColumns().forEach(column -> {
+
+                //Populate column sources.
+                column.setTableSource(TableSource.fromDefinition(
+                        column.getTableSourceDefinition(),
+                        table.getVersion(),
+                        metaDataStore
+                ));
+
+                //Populate column argument sources.
+                column.getArgumentDefinitions().forEach(argument -> {
+                    argument.setTableSource(TableSource.fromDefinition(
+                            argument.getTableSourceDefinition(),
+                            table.getVersion(),
+                            metaDataStore
+                    ));
+                });
+            });
+        });
+
+        // Verify populated tables in metadata store.
+        verifyMetaData(metaDataStore);
     }
+
+    /**
+     * Verifies all tables in metadata store after they are constructed by {@link #populateMetaData(MetaDataStore)}.
+     * @param metaDataStore metadata store to verify.
+     */
+    protected abstract void verifyMetaData(MetaDataStore metaDataStore);
 
     /**
      * Contains state necessary for query execution.
@@ -154,7 +214,7 @@ public abstract class QueryEngine {
         void close();
 
         /**
-         * Cancels running transaction
+         * Cancels running transaction.
          */
         void cancel();
     }
@@ -166,7 +226,7 @@ public abstract class QueryEngine {
      * {@link Query}. Results may be taken from a cache, if configured.
      *
      * @param query The query customized for a particular persistent storage or storage client
-     * @param transaction
+     * @param transaction transaction
      * @return query results
      */
     public abstract QueryResult executeQuery(Query query, Transaction transaction);
@@ -189,4 +249,5 @@ public abstract class QueryEngine {
      */
     public abstract List<String> explain(Query query);
 
+    public abstract QueryValidator getValidator();
 }

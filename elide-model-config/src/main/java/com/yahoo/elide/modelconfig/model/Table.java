@@ -5,14 +5,20 @@
  */
 package com.yahoo.elide.modelconfig.model;
 
+import static com.yahoo.elide.modelconfig.model.NamespaceConfig.DEFAULT;
 import com.fasterxml.jackson.annotation.JsonInclude;
 import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
+import com.google.common.collect.Streams;
+
+import org.apache.commons.lang3.StringUtils;
 import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
+import lombok.Singular;
 
 import java.util.ArrayList;
 import java.util.LinkedHashSet;
@@ -32,10 +38,13 @@ import java.util.Set;
     "description",
     "cardinality",
     "readAccess",
+    "namespace",
     "joins",
     "measures",
     "dimensions",
     "tags",
+    "hints",
+    "arguments",
     "extend",
     "sql",
     "table",
@@ -46,8 +55,8 @@ import java.util.Set;
 @EqualsAndHashCode()
 @AllArgsConstructor
 @NoArgsConstructor
+@Builder
 public class Table implements Named {
-
     @JsonProperty("name")
     private String name;
 
@@ -60,9 +69,11 @@ public class Table implements Named {
     @JsonProperty("dbConnectionName")
     private String dbConnectionName;
 
+    @Builder.Default
     @JsonProperty("isFact")
     private Boolean isFact = true;
 
+    @Builder.Default
     @JsonProperty("hidden")
     private Boolean hidden = false;
 
@@ -78,21 +89,39 @@ public class Table implements Named {
     @JsonProperty("cardinality")
     private String cardinality;
 
+    @Builder.Default
     @JsonProperty("readAccess")
     private String readAccess = "Prefab.Role.All";
 
+    @Builder.Default
+    @JsonProperty("namespace")
+    private String namespace = DEFAULT;
+
     @JsonProperty("joins")
-    private List<Join> joins = new ArrayList<Join>();
+    @Singular
+    private List<Join> joins = new ArrayList<>();
 
     @JsonProperty("measures")
-    private List<Measure> measures = new ArrayList<Measure>();
+    @Singular
+    private List<Measure> measures = new ArrayList<>();
 
     @JsonProperty("dimensions")
-    private List<Dimension> dimensions = new ArrayList<Dimension>();
+    @Singular
+    private List<Dimension> dimensions = new ArrayList<>();
 
+    @Builder.Default
     @JsonProperty("tags")
     @JsonDeserialize(as = LinkedHashSet.class)
-    private Set<String> tags = new LinkedHashSet<String>();
+    private Set<String> tags = new LinkedHashSet<>();
+
+    @Builder.Default
+    @JsonProperty("hints")
+    @JsonDeserialize(as = LinkedHashSet.class)
+    private Set<String> hints = new LinkedHashSet<>();
+
+    @JsonProperty("arguments")
+    @Singular
+    private List<Argument> arguments = new ArrayList<>();
 
     @JsonProperty("extend")
     private String extend;
@@ -113,22 +142,54 @@ public class Table implements Named {
     }
 
     /**
-     * Checks recursively if this model or any of its parent models has provided field.
-     * @param elideTableConfig
-     * @param fieldName
-     * @return true if this model has provided field
+     * Checks if this model has provided field.
+     * @param fieldName Name of the {@link Dimension} or {@link Measure} to check for.
+     * @return true if this model has provided field.
      */
-    public boolean hasField(ElideTableConfig elideTableConfig, String fieldName) {
+    public boolean hasField(String fieldName) {
+        return hasName(this.dimensions, fieldName) || hasName(this.measures, fieldName);
+    }
 
-        if (hasName(this.dimensions, fieldName) || hasName(this.measures, fieldName)) {
-            return true;
-        }
-        if (hasParent()) {
-            Table parent = elideTableConfig.getTable(this.getExtend());
-            return parent.hasField(elideTableConfig, fieldName);
-        }
+    /**
+     * Provides the Field details for provided field name.
+     * @param fieldName Name of {@link Dimension} or {@link Measure} to retrieve.
+     * @return Field for provided field name.
+     */
+    public Named getField(String fieldName) {
+        return Streams.concat(this.dimensions.stream(), this.measures.stream())
+                        .filter(col -> col.getName().equals(fieldName))
+                        .findFirst()
+                        .orElse(null);
+    }
 
-        return false;
+    /**
+     * Checks if this model has provided argument.
+     * @param argName Name of the {@link Argument} to  check for.
+     * @return true if this model has provided argument.
+     */
+    public boolean hasArgument(String argName) {
+        return hasName(this.arguments, argName);
+    }
+
+    /**
+     * Checks if this model has provided join field.
+     * @param joinName Name of the {@link Join} to check for.
+     * @return true if this model has provided join field.
+     */
+    public boolean hasJoinField(String joinName) {
+        return hasName(this.joins, joinName);
+    }
+
+    /**
+     * Provides the Join details for provided join name.
+     * @param joinName Name of the {@link Join} to retrieve.
+     * @return Join for provided join name.
+     */
+    public Join getJoin(String joinName) {
+        return this.joins.stream()
+                        .filter(join -> join.getName().equals(joinName))
+                        .findFirst()
+                        .orElse(null);
     }
 
     /**
@@ -136,15 +197,44 @@ public class Table implements Named {
      * @return true if this model extends another model
      */
     public boolean hasParent() {
-        return !(this.extend == null || this.extend.trim().isEmpty());
+        return StringUtils.isNotBlank(this.extend);
     }
 
     /**
      * Provides the parent model for this model.
-     * @param elideTableConfig
+     * @param elideTableConfig {@link ElideTableConfig}
      * @return Parent model for this model
      */
     public Table getParent(ElideTableConfig elideTableConfig) {
-        return elideTableConfig.getTable(this.extend);
+        return elideTableConfig.getTable(getGlobalExtend());
+    }
+
+    @Override
+    public String getName() {
+        return name;
+    }
+
+    @Override
+    public String getGlobalName() {
+        return getModelName(name, namespace);
+    }
+
+    /**
+     * Return the globally unique table name for the inherited table.
+     * @return The globally unique name for the inherited table or null.
+     */
+    public String getGlobalExtend() {
+        if (extend == null || extend.isEmpty()) {
+            return extend;
+        }
+        return getModelName(extend, namespace);
+    }
+
+    public static String getModelName(String tableName, String namespace) {
+        if (namespace == null || namespace.isEmpty() || namespace.equals(DEFAULT)) {
+            return tableName;
+        }
+
+        return namespace + "_" + tableName;
     }
 }

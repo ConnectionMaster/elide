@@ -47,15 +47,17 @@ public class InMemoryStoreTransaction implements DataStoreTransaction {
     private static final Comparator<Object> NULL_SAFE_COMPARE = (a, b) -> {
         if (a == null && b == null) {
             return 0;
-        } else if (a == null) {
-            return -1;
-        } else if (b == null) {
-            return 1;
-        } else if (a instanceof Comparable) {
-            return ((Comparable) a).compareTo(b);
-        } else {
-            throw new IllegalStateException("Trying to comparing non-comparable types!");
         }
+        if (a == null) {
+            return -1;
+        }
+        if (b == null) {
+            return 1;
+        }
+        if (a instanceof Comparable) {
+            return ((Comparable) a).compareTo(b);
+        }
+        throw new IllegalStateException("Trying to comparing non-comparable types!");
     };
 
     /**
@@ -79,22 +81,14 @@ public class InMemoryStoreTransaction implements DataStoreTransaction {
                               Object entity,
                               Relationship relationship,
                               RequestScope scope) {
-        DataFetcher fetcher = new DataFetcher() {
-            @Override
-            public Object fetch(Optional<FilterExpression> filterExpression,
-                                Optional<Sorting> sorting,
-                                Optional<Pagination> pagination,
-                                RequestScope scope) {
-
-                return tx.getRelation(relationTx, entity, relationship.copyOf()
+        DataFetcher fetcher = (filterExpression, sorting, pagination, requestScope) ->
+                tx.getRelation(relationTx, entity, relationship.copyOf()
                         .projection(relationship.getProjection().copyOf()
                                 .filterExpression(filterExpression.orElse(null))
                                 .sorting(sorting.orElse(null))
                                 .pagination(pagination.orElse(null))
                                 .build()
-                        ).build(), scope);
-            }
-        };
+                        ).build(), requestScope);
 
 
         /*
@@ -113,29 +107,20 @@ public class InMemoryStoreTransaction implements DataStoreTransaction {
         if (projection.getFilterExpression() == null
                 || tx.supportsFiltering(scope, Optional.empty(), projection) == FeatureSupport.FULL) {
             return tx.loadObject(projection, id, scope);
-        } else {
-            return DataStoreTransaction.super.loadObject(projection, id, scope);
         }
+        return DataStoreTransaction.super.loadObject(projection, id, scope);
     }
 
     @Override
     public Iterable<Object> loadObjects(EntityProjection projection,
                                         RequestScope scope) {
 
-        DataFetcher fetcher = new DataFetcher() {
-            @Override
-            public Iterable<Object> fetch(Optional<FilterExpression> filterExpression,
-                                          Optional<Sorting> sorting,
-                                          Optional<Pagination> pagination,
-                                          RequestScope scope) {
-
-                return tx.loadObjects(projection.copyOf()
+        DataFetcher fetcher = (filterExpression, sorting, pagination, requestScope) ->
+                tx.loadObjects(projection.copyOf()
                         .filterExpression(filterExpression.orElse(null))
                         .pagination(pagination.orElse(null))
                         .sorting(sorting.orElse(null))
-                        .build(), scope);
-            }
-        };
+                        .build(), requestScope);
 
         return (Iterable<Object>) fetchData(fetcher, Optional.empty(), projection, false, scope);
     }

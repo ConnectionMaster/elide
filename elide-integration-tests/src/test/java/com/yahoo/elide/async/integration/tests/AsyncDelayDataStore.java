@@ -16,11 +16,13 @@ import com.yahoo.elide.core.dictionary.EntityDictionary;
 public class AsyncDelayDataStore implements DataStore {
 
     private DataStore delayStore;
-    private Integer testDelay;
 
     public AsyncDelayDataStore(DataStore delayStore, Integer testDelay) {
         this.delayStore = delayStore;
-        this.testDelay = testDelay;
+    }
+
+    public AsyncDelayDataStore(DataStore delayStore) {
+        this.delayStore = delayStore;
     }
 
     @Override
@@ -30,11 +32,11 @@ public class AsyncDelayDataStore implements DataStore {
 
     @Override
     public DataStoreTransaction beginTransaction() {
-        return new AsyncDelayStoreTransaction(delayStore.beginTransaction(), testDelay);
+        return new AsyncDelayStoreTransaction(delayStore.beginTransaction());
     }
 
     @Override
     public DataStoreTransaction beginReadTransaction() {
-        return new AsyncDelayStoreTransaction(delayStore.beginReadTransaction(), testDelay);
+        return new AsyncDelayStoreTransaction(delayStore.beginReadTransaction());
     }
 }

@@ -1,5 +1,6 @@
 CREATE TABLE IF NOT EXISTS playerStats
     (
+      id VARCHAR(255),
       highScore BIGINT,
       lowScore BIGINT,
       overallRating VARCHAR(255),
@@ -11,9 +12,9 @@ CREATE TABLE IF NOT EXISTS playerStats
       updatedDate DATETIME
     );
 TRUNCATE TABLE playerStats;
-INSERT INTO playerStats VALUES (1234, 35, 'Good', '840', '840', 1, 2, '2019-07-12 00:00:00', '2019-10-12 00:00:00');
-INSERT INTO playerStats VALUES (2412, 241, 'Great', '840', '840', 2, 3, '2019-07-11 00:00:00', '2020-07-12 00:00:00');
-INSERT INTO playerStats VALUES (1000, 72, 'Good', '344', '344', 3, 1, '2019-07-13 00:00:00', '2020-01-12 00:00:00');
+INSERT INTO playerStats VALUES (1, 1234, 35, 'Good', '840', '840', 1, 2, '2019-07-12 00:00:00', '2019-10-12 00:00:00');
+INSERT INTO playerStats VALUES (2, 2412, 241, 'Great', '840', '840', 2, 3, '2019-07-11 00:00:00', '2020-07-12 00:00:00');
+INSERT INTO playerStats VALUES (3, 1000, 72, 'Good', '344', '344', 3, 1, '2019-07-13 00:00:00', '2020-01-12 00:00:00');
 
 
 CREATE TABLE IF NOT EXISTS countries
@@ -62,6 +63,8 @@ INSERT INTO videoGames VALUES (10, 50, 1);
 INSERT INTO videoGames VALUES (20, 150, 1);
 INSERT INTO videoGames VALUES (30, 520, 1);
 INSERT INTO videoGames VALUES (10, 200, 2);
+INSERT INTO videoGames VALUES (15, 150, 2);
+INSERT INTO videoGames VALUES (10, 300, 3);
 
 
 CREATE TABLE IF NOT EXISTS continents
@@ -82,3 +85,13 @@ TRUNCATE TABLE planets;
 INSERT INTO planets VALUES (1, 'Mercury');
 INSERT INTO planets VALUES (2, 'Venus');
 INSERT INTO planets VALUES (3, 'Earth');
+
+CREATE TABLE IF NOT EXISTS gameRevenue
+    (
+      revenue BIGINT,
+      country_id VARCHAR(255),
+      player_stats_id VARCHAR(255),
+      category VARCHAR(255),
+      saleDate DATETIME
+    );
+TRUNCATE TABLE gameRevenue;

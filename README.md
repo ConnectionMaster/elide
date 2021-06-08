@@ -69,11 +69,7 @@ More information about Elide can be found at [elide.io](https://elide.io/).
 
 ## Install
 
-To try out an Elide example service (with a Postgres database), you can deploy via Heroku.
-
-[![Deploy](https://www.herokucdn.com/deploy/button.svg)](https://heroku.com/deploy?template=https://github.com/yahoo/elide-spring-boot-example)
-
-The code that generates this example can be found [here](https://github.com/yahoo/elide-spring-boot-example).
+To try out an Elide example service, check out this [Spring boot example project](https://github.com/yahoo/elide-spring-boot-example).
 
 Alternatively, use [elide-standalone](https://github.com/yahoo/elide/tree/master/elide-standalone) which allows you to quickly setup a local instance of Elide running inside an embedded Jetty application.
 
@@ -108,8 +104,8 @@ Add Elide annotations to both expose your models through the web service and def
 @Include(rootLevel = true)
 @ReadPermission("Everyone")
 @CreatePermission("Admin OR Publisher")
-@DeletePermission("Noone"
-@UpdatePermission("Noone")
+@DeletePermission("None")
+@UpdatePermission("None")
 public class Book {
 
     @Id
@@ -223,6 +219,10 @@ This project is licensed under the terms of the [Apache 2.0](http://www.apache.o
 Please refer to [LICENSE](LICENSE.txt) for the full terms.
 
 ## Articles
+Intro to Elide video
+
+[![Intro to Elide](http://img.youtube.com/vi/WeFzseAKbzs/0.jpg)](http://www.youtube.com/watch?v=WeFzseAKbzs "Intro to Elide")
+
 [Create a JSON API REST Service With Spring Boot and Elide](https://dzone.com/articles/create-a-json-api-rest-service-with-spring-boot-an)
 
 [Custom Security With a Spring Boot/Elide Json API Server](https://dzone.com/articles/custom-security-with-a-spring-bootelide-json-api-s)

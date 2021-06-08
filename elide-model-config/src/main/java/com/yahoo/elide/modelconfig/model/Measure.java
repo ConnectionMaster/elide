@@ -10,11 +10,15 @@ import com.fasterxml.jackson.annotation.JsonProperty;
 import com.fasterxml.jackson.annotation.JsonPropertyOrder;
 import com.fasterxml.jackson.databind.annotation.JsonDeserialize;
 import lombok.AllArgsConstructor;
+import lombok.Builder;
 import lombok.Data;
 import lombok.EqualsAndHashCode;
 import lombok.NoArgsConstructor;
+import lombok.Singular;
 
+import java.util.ArrayList;
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 
 /**
@@ -29,14 +33,16 @@ import java.util.Set;
     "hidden",
     "readAccess",
     "definition",
-    "queryPlanResolver",
+    "maker",
     "type",
-    "tags"
+    "tags",
+    "arguments",
 })
 @Data
 @EqualsAndHashCode()
 @AllArgsConstructor
 @NoArgsConstructor
+@Builder
 public class Measure implements Named {
 
     @JsonProperty("name")
@@ -63,12 +69,16 @@ public class Measure implements Named {
     @JsonProperty("type")
     private Type type;
 
-    @JsonProperty("queryPlanResolver")
-    private String queryPlanResolver;
+    @JsonProperty("maker")
+    private String maker;
 
     @JsonProperty("tags")
     @JsonDeserialize(as = LinkedHashSet.class)
-    private Set<String> tags = new LinkedHashSet<String>();
+    private Set<String> tags = new LinkedHashSet<>();
+
+    @JsonProperty("arguments")
+    @Singular
+    private List<Argument> arguments = new ArrayList<>();
 
     /**
      * Returns description of the measure.
@@ -77,5 +87,14 @@ public class Measure implements Named {
      */
     public String getDescription() {
         return (this.description == null ? getName() : this.description);
+    }
+
+    /**
+     * Checks if this measure has provided argument.
+     * @param argName Name of the {@link Argument} to  check for.
+     * @return true if this measure has provided argument.
+     */
+    public boolean hasArgument(String argName) {
+        return hasName(this.arguments, argName);
     }
 }

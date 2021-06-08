@@ -49,6 +49,7 @@ import com.yahoo.elide.jsonapi.models.Resource;
 import com.yahoo.elide.jsonapi.models.ResourceIdentifier;
 import com.fasterxml.jackson.annotation.JsonIgnore;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Predicates;
 import com.google.common.collect.Sets;
 import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.collections4.IterableUtils;
@@ -90,7 +91,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
     private final DataStoreTransaction transaction;
     private final RequestScope requestScope;
     private int hashCode = 0;
-
+    public static final Set<String> ALL_FIELDS = null;
     public static final String CLASS_NO_FIELD = "";
 
     /**
@@ -153,7 +154,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
 
         // Keep track of new resources for non-transferable resources
         requestScope.getNewPersistentResources().add(newResource);
-        checkUserPermission(CreatePermission.class, obj, requestScope);
+        checkUserPermission(CreatePermission.class, obj, requestScope, ALL_FIELDS);
 
         newResource.auditClass(Audit.Action.CREATE, new ChangeSpec(newResource, null, null, newResource.getObject()));
 
@@ -263,7 +264,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
         if (obj == null) {
             // try to load object
             Optional<FilterExpression> permissionFilter = getPermissionFilterExpression(loadClass,
-                    requestScope);
+                    requestScope, projection.getRequestedFields());
             Type<?> idType = dictionary.getIdType(loadClass);
 
             projection = projection
@@ -284,7 +285,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
 
         // No need to have read access for a newly created object
         if (!requestScope.getNewResources().contains(resource)) {
-            resource.checkFieldAwarePermissions(ReadPermission.class);
+            resource.checkFieldAwarePermissions(ReadPermission.class, projection.getRequestedFields());
         }
 
         return resource;
@@ -296,12 +297,13 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
      * @param <T> the type parameter
      * @param loadClass the load class
      * @param requestScope the request scope
+     * @param requestedFields The set of requested fields
      * @return a FilterExpression defined by FilterExpressionCheck.
      */
     private static <T> Optional<FilterExpression> getPermissionFilterExpression(Type<T> loadClass,
-            RequestScope requestScope) {
+            RequestScope requestScope, Set<String> requestedFields) {
         try {
-            return requestScope.getPermissionExecutor().getReadPermissionFilter(loadClass);
+            return requestScope.getPermissionExecutor().getReadPermissionFilter(loadClass, requestedFields);
         } catch (ForbiddenAccessException e) {
             return Optional.empty();
         }
@@ -330,15 +332,17 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
 
         DataStoreTransaction tx = requestScope.getTransaction();
 
-        if (shouldSkipCollection(loadClass, ReadPermission.class, requestScope)) {
+        if (shouldSkipCollection(loadClass, ReadPermission.class, requestScope, projection.getRequestedFields())) {
             if (ids.isEmpty()) {
                 return Observable.empty();
             }
             throw new InvalidObjectIdentifierException(ids.toString(), dictionary.getJsonAliasFor(loadClass));
         }
 
+        Set<String> requestedFields = projection.getRequestedFields();
+
         if (pagination != null && !pagination.isDefaultInstance()
-                && !CanPaginateVisitor.canPaginate(loadClass, dictionary, requestScope)) {
+                && !CanPaginateVisitor.canPaginate(loadClass, dictionary, requestScope, requestedFields)) {
             throw new BadRequestException(String.format("Cannot paginate %s",
                     dictionary.getJsonAliasFor(loadClass)));
         }
@@ -359,7 +363,8 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
                     .orElse(idExpression);
         }
 
-        Optional<FilterExpression> permissionFilter = getPermissionFilterExpression(loadClass, requestScope);
+        Optional<FilterExpression> permissionFilter = getPermissionFilterExpression(loadClass, requestScope,
+                requestedFields);
         if (permissionFilter.isPresent()) {
             if (filterExpression != null) {
                 filterExpression = new AndFilterExpression(filterExpression, permissionFilter.get());
@@ -378,6 +383,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
         Observable<PersistentResource> existingResources = filter(
                 ReadPermission.class,
                 Optional.ofNullable(modifiedProjection.getFilterExpression()),
+                projection.getRequestedFields(),
                 Observable.fromIterable(
                         new PersistentResourceSet(tx.loadObjects(modifiedProjection, requestScope), requestScope))
         );
@@ -457,8 +463,13 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
      */
     public boolean updateRelation(String fieldName, Set<PersistentResource> resourceIdentifiers) {
         RelationshipType type = getRelationshipType(fieldName);
-        Set<PersistentResource> resources = filter(ReadPermission.class, Optional.empty(),
+
+        Set<PersistentResource> resources = filter(
+                ReadPermission.class,
+                Optional.empty(),
+                ALL_FIELDS,
                 getRelationUncheckedUnfiltered(fieldName)).toList(LinkedHashSet::new).blockingGet();
+
         boolean isUpdated;
         if (type.isToMany()) {
             List<Object> modifiedResources = CollectionUtils.isEmpty(resourceIdentifiers)
@@ -616,6 +627,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
      */
     public boolean clearRelation(String relationName) {
         Set<PersistentResource> mine = filter(ReadPermission.class, Optional.empty(),
+                ALL_FIELDS,
                 getRelationUncheckedUnfiltered(relationName)).toList(LinkedHashSet::new).blockingGet();
 
         checkFieldAwareDeferPermissions(UpdatePermission.class, relationName, Collections.emptySet(),
@@ -727,7 +739,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
     }
 
     /**
-     * Checks whether the new entity is already a part of the relationship
+     * Checks whether the new entity is already a part of the relationship.
      * @param fieldName which relation link
      * @param toAdd the new relation
      * @return boolean representing the result of the check
@@ -789,10 +801,26 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
         final Set<PersistentResource> newResources = getRequestScope().getNewPersistentResources();
 
         for (PersistentResource persistentResource : resourceIdentifiers) {
-            if (!newResources.contains(persistentResource)
-                    && !lineage.getRecord(persistentResource.getTypeName()).contains(persistentResource)) {
-                checkPermission(NonTransferable.class, persistentResource);
+
+            //New resources are exempt from NonTransferable checks
+            if (newResources.contains(persistentResource)
+                    //This allows nested object hierarchies of non-transferables that are created in more than one
+                    //client request. A & B are created in one request and C is created in a subsequent request).
+                    //Even though B is non-transferable, while creating C in /A/B, C is allowed to
+                    //reference B because B & C are part of the same non-transferable object hierarchy.
+                    //To do this, the client must be able to read B (since they navigated through it) and also
+                    //update the relationship that links B & C.
+
+                    //The object being added (C) is non-transferable
+                    || (! dictionary.isTransferable(getResourceType())
+                    //The object being added to (B) is not strict
+                    && ! dictionary.isStrictNonTransferable(persistentResource.getResourceType())
+                    //B is in C's lineage (/B/C).
+                    && persistentResource.equals(lineage.getParent()))) {
+                continue;
             }
+
+            checkPermission(NonTransferable.class, persistentResource);
         }
     }
 
@@ -911,7 +939,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
         FilterExpression filterExpression = Optional.ofNullable(relationship.getProjection().getFilterExpression())
                 .orElse(null);
 
-        assertRelationshipExists(relationship.getName());
+        assertPropertyExists(relationship.getName());
         Type<?> entityType = dictionary.getParameterizedType(getResourceType(), relationship.getName());
 
         Set<PersistentResource> newResources = new LinkedHashSet<>();
@@ -938,6 +966,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
         Observable<PersistentResource> existingResources = filter(
                 ReadPermission.class,
                 Optional.ofNullable(filterExpression),
+                relationship.getProjection().getRequestedFields(),
                 getRelation(relationship.copyOf()
                     .projection(relationship.getProjection().copyOf()
                                 .filterExpression(filterExpression)
@@ -1007,11 +1036,12 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
             com.yahoo.elide.core.request.Relationship relationship) {
         return filter(ReadPermission.class,
                 Optional.ofNullable(relationship.getProjection().getFilterExpression()),
+                relationship.getProjection().getRequestedFields(),
                 getRelation(relationship, true));
     }
 
     private Observable<PersistentResource> getRelationUncheckedUnfiltered(String relationName) {
-        assertRelationshipExists(relationName);
+        assertPropertyExists(relationName);
         return getRelation(com.yahoo.elide.core.request.Relationship.builder()
                 .name(relationName)
                 .alias(relationName)
@@ -1021,20 +1051,9 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
                 .build(), false);
     }
 
-    private Observable<PersistentResource> getRelationCheckedUnfiltered(String relationName) {
-        assertRelationshipExists(relationName);
-        return getRelation(com.yahoo.elide.core.request.Relationship.builder()
-                .name(relationName)
-                .alias(relationName)
-                .projection(EntityProjection.builder()
-                        .type(dictionary.getParameterizedType(getResourceType(), relationName))
-                        .build())
-                .build(), true);
-    }
-
-    private void assertRelationshipExists(String relationName) {
-        if (relationName == null || dictionary.getParameterizedType(obj, relationName) == null) {
-            throw new InvalidAttributeException(relationName, this.getTypeName());
+    private void assertPropertyExists(String propertyName) {
+        if (propertyName == null || dictionary.getParameterizedType(obj, propertyName) == null) {
+            throw new InvalidAttributeException(propertyName, this.getTypeName());
         }
     }
 
@@ -1055,8 +1074,13 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
 
         Optional<Pagination> pagination = Optional.ofNullable(relationship.getProjection().getPagination());
 
-        if (pagination.isPresent() && !pagination.get().isDefaultInstance()
-                && !CanPaginateVisitor.canPaginate(relationClass, dictionary, requestScope)) {
+        if (pagination.filter(Predicates.not(Pagination::isDefaultInstance)).isPresent()
+                && !CanPaginateVisitor.canPaginate(
+                        relationClass,
+                        dictionary,
+                        requestScope,
+                        relationship.getProjection().getRequestedFields())) {
+
             throw new BadRequestException(String.format("Cannot paginate %s",
                     dictionary.getJsonAliasFor(relationClass)));
         }
@@ -1075,14 +1099,15 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
         String realName = dictionary.getNameFromAlias(obj, relationName);
         relationName = (realName == null) ? relationName : realName;
 
-        assertRelationshipExists(relationName);
+        assertPropertyExists(relationName);
 
         checkFieldAwareDeferPermissions(ReadPermission.class, relationName, null, null);
 
         return !shouldSkipCollection(
                 dictionary.getParameterizedType(obj, relationName),
                 ReadPermission.class,
-                requestScope);
+                requestScope,
+                relationship.getProjection().getRequestedFields());
     }
 
     /**
@@ -1116,7 +1141,8 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
         }
 
         //Invoke filterExpressionCheck and then merge with filterExpression.
-        Optional<FilterExpression> permissionFilter = getPermissionFilterExpression(relationClass, requestScope);
+        Optional<FilterExpression> permissionFilter = getPermissionFilterExpression(relationClass,
+                requestScope, relationship.getProjection().getRequestedFields());
         Optional<FilterExpression> computedFilters = Optional.ofNullable(filterExpression);
 
         if (permissionFilter.isPresent() && filterExpression != null) {
@@ -1160,17 +1186,18 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
      *
      * @param resourceClass Resource class
      * @param annotationClass Annotation class
+     * @param requestedFields The set of requested fields
      * @param requestScope Request scope
      * @return True if collection should be skipped (i.e. denied access), false otherwise
      */
     private static boolean shouldSkipCollection(Type<?> resourceClass, Class<? extends Annotation> annotationClass,
-            RequestScope requestScope) {
+            RequestScope requestScope, Set<String> requestedFields) {
         try {
-            requestScope.getPermissionExecutor().checkUserPermissions(resourceClass, annotationClass);
+            requestScope.getPermissionExecutor().checkUserPermissions(resourceClass, annotationClass, requestedFields);
+            return false;
         } catch (ForbiddenAccessException e) {
             return true;
         }
-        return false;
     }
 
     /**
@@ -1190,7 +1217,14 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
      */
     @Deprecated
     public Object getAttribute(String attr) {
-        return this.getValueChecked(attr);
+        assertPropertyExists(attr);
+
+        return this.getAttribute(
+                Attribute.builder()
+                        .name(attr)
+                        .alias(attr)
+                        .type(dictionary.getParameterizedType(getResourceType(), attr))
+                        .build());
     }
 
     /**
@@ -1324,7 +1358,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
      * @return The Resource
      */
     public Resource toResource(EntityProjection projection) {
-        return toResource(() -> { return getRelationships(projection); }, this::getAttributes);
+        return toResource(() -> getRelationships(projection), this::getAttributes);
     }
 
     /**
@@ -1335,12 +1369,23 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
      */
     private Resource toResource(final Supplier<Map<String, Relationship>> relationshipSupplier,
                                final Supplier<Map<String, Object>> attributeSupplier) {
+        return toResource(relationshipSupplier.get(), attributeSupplier.get());
+    }
+
+    /**
+     * Convert a persistent resource to a resource.
+     * @param relationships The relationships
+     * @param attributes The attributes
+     * @return The Resource
+     */
+    public Resource toResource(final Map<String, Relationship> relationships,
+                               final Map<String, Object> attributes) {
         final Resource resource = new Resource(typeName, (obj == null)
                 ? uuid.orElseThrow(
                 () -> new InvalidEntityBodyException("No id found on object"))
                 : dictionary.getId(obj));
-        resource.setRelationships(relationshipSupplier.get());
-        resource.setAttributes(attributeSupplier.get());
+        resource.setRelationships(relationships);
+        resource.setAttributes(attributes);
         if (requestScope.getElideSettings().isEnableJsonLinks()) {
             resource.setLinks(requestScope.getElideSettings().getJsonApiLinks().getResourceLevelLinks(this));
         }
@@ -1466,19 +1511,6 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
             oldValue.checkFieldAwareDeferPermissions(UpdatePermission.class, inverseField, null, getObject());
         }
         this.setValueChecked(fieldName, null);
-    }
-
-    /**
-     * Gets a value from an entity and checks read permissions.
-     * @param fieldName the field name
-     * @return value value
-     */
-    @Deprecated
-    protected Object getValueChecked(String fieldName) {
-        requestScope.publishLifecycleEvent(this, READ);
-        requestScope.publishLifecycleEvent(this, fieldName, READ, Optional.empty());
-        checkFieldAwareDeferPermissions(ReadPermission.class, fieldName, (Object) null, (Object) null);
-        return getValue(getObject(), fieldName, requestScope);
     }
 
     /**
@@ -1722,6 +1754,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
      */
     protected static Observable<PersistentResource> filter(Class<? extends Annotation> permission,
             Optional<FilterExpression> filter,
+            Set<String> requestedFields,
             Observable<PersistentResource> resources) {
 
         return resources.filter(resource -> {
@@ -1733,7 +1766,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
                 // then they will be filtered out and only the id is returned. Similarly, all future requests to this
                 // object will behave as expected.
                 if (!resource.getRequestScope().getNewResources().contains(resource)) {
-                    resource.checkFieldAwarePermissions(permission);
+                    resource.checkFieldAwarePermissions(permission, requestedFields);
                     // Verify fields have ReadPermission on filter join
                     if (filter.isPresent()
                             && !filter.get().accept(new VerifyFieldAccessFilterExpressionVisitor(resource))) {
@@ -1757,6 +1790,7 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
         Set<String> filteredSet = new LinkedHashSet<>();
         for (String field : fields) {
             try {
+
                 if (checkIncludeSparseField(requestScope.getSparseFields(), typeName, field)) {
                     checkFieldAwareReadPermissions(field);
                     filteredSet.add(field);
@@ -1788,13 +1822,16 @@ public class PersistentResource<T> implements com.yahoo.elide.core.security.Pers
     }
 
     private static <A extends Annotation> ExpressionResult checkUserPermission(
-            Class<A> annotationClass, Object obj, RequestScope requestScope) {
+            Class<A> annotationClass, Object obj, RequestScope requestScope, Set<String> requestedFields) {
         return requestScope.getPermissionExecutor()
-                .checkUserPermissions(EntityDictionary.getType(obj), annotationClass);
+                .checkUserPermissions(EntityDictionary.getType(obj), annotationClass, requestedFields);
     }
 
-    private <A extends Annotation> ExpressionResult checkFieldAwarePermissions(Class<A> annotationClass) {
-        return requestScope.getPermissionExecutor().checkPermission(annotationClass, this);
+    private <A extends Annotation> ExpressionResult checkFieldAwarePermissions(
+            Class<A> annotationClass,
+            Set<String> requestedFields
+    ) {
+        return requestScope.getPermissionExecutor().checkPermission(annotationClass, this, requestedFields);
     }
 
     private <A extends Annotation> ExpressionResult checkFieldAwareReadPermissions(String fieldName) {

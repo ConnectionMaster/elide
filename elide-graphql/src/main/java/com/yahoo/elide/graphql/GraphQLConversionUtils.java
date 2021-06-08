@@ -6,7 +6,6 @@
 
 package com.yahoo.elide.graphql;
 
-import static com.yahoo.elide.core.utils.TypeHelper.getClassType;
 import static graphql.schema.GraphQLArgument.newArgument;
 import static graphql.schema.GraphQLEnumType.newEnum;
 import static graphql.schema.GraphQLFieldDefinition.newFieldDefinition;
@@ -18,7 +17,6 @@ import com.yahoo.elide.core.type.ClassType;
 import com.yahoo.elide.core.type.Type;
 import com.yahoo.elide.core.utils.coerce.CoerceUtil;
 import com.yahoo.elide.core.utils.coerce.converters.ElideTypeConverter;
-import com.yahoo.elide.core.utils.coerce.converters.Serde;
 import graphql.Scalars;
 import graphql.schema.DataFetcher;
 import graphql.schema.GraphQLArgument;
@@ -67,43 +65,46 @@ public class GraphQLConversionUtils {
     }
 
     private void registerCustomScalars() {
-        for (Class serdeType : CoerceUtil.getSerdes().keySet()) {
-            Serde serde = CoerceUtil.lookup(serdeType);
-            ElideTypeConverter elideTypeConverter = serde.getClass()
-                    .getAnnotation(ElideTypeConverter.class);
-            if (elideTypeConverter != null) {
-                SerdeCoercing serdeCoercing = new SerdeCoercing(ERROR_MESSAGE, serde);
-                scalarMap.put(getClassType(elideTypeConverter.type()), new GraphQLScalarType(elideTypeConverter.name(),
-                        elideTypeConverter.description(), serdeCoercing));
-            }
-        }
+        CoerceUtil.getSerdes().forEach((type, serde) -> {
+            SerdeCoercing<?, ?> serdeCoercing = new SerdeCoercing<>(ERROR_MESSAGE, serde);
+            ElideTypeConverter elideTypeConverter = serde.getClass().getAnnotation(ElideTypeConverter.class);
+            String name = elideTypeConverter != null ? elideTypeConverter.name() : type.getSimpleName();
+            String description = elideTypeConverter != null ? elideTypeConverter.description() : type.getSimpleName();
+            scalarMap.put(ClassType.of(type), new GraphQLScalarType(name, description, serdeCoercing));
+        });
     }
 
     /**
-     * Converts any non-entity type to a GraphQLType
+     * Converts any non-entity type to a GraphQLType.
      * @param clazz - the non-entity type.
      * @return the GraphQLType or null if there is a problem with the underlying model.
      */
     public GraphQLScalarType classToScalarType(Type<?> clazz) {
-        if (clazz.equals(getClassType(int.class)) || clazz.equals(getClassType(Integer.class))) {
+        if (clazz.equals(ClassType.of(int.class)) || clazz.equals(ClassType.of(Integer.class))) {
             return Scalars.GraphQLInt;
-        } else if (clazz.equals(getClassType(boolean.class)) || clazz.equals(getClassType(Boolean.class))) {
+        } else if (clazz.equals(ClassType.of(boolean.class)) || clazz.equals(ClassType.of(Boolean.class))) {
             return Scalars.GraphQLBoolean;
-        } else if (clazz.equals(getClassType(long.class)) || clazz.equals(getClassType(Long.class))) {
+        } else if (clazz.equals(ClassType.of(long.class)) || clazz.equals(ClassType.of(Long.class))) {
             return Scalars.GraphQLLong;
-        } else if (clazz.equals(getClassType(float.class)) || clazz.equals(getClassType(Float.class))) {
+        } else if (clazz.equals(ClassType.of(float.class)) || clazz.equals(ClassType.of(Float.class))) {
             return Scalars.GraphQLFloat;
-        } else if (clazz.equals(getClassType(double.class)) || clazz.equals(getClassType(Double.class))) {
+        } else if (clazz.equals(ClassType.of(double.class)) || clazz.equals(ClassType.of(Double.class))) {
             return Scalars.GraphQLFloat;
-        } else if (clazz.equals(getClassType(short.class)) || clazz.equals(getClassType(Short.class))) {
+        } else if (clazz.equals(ClassType.of(short.class)) || clazz.equals(ClassType.of(Short.class))) {
             return Scalars.GraphQLShort;
-        } else if (clazz.equals(getClassType(String.class))) {
+        } else if (clazz.equals(ClassType.of(String.class))) {
             return Scalars.GraphQLString;
-        } else if (clazz.equals(getClassType(BigDecimal.class))) {
+        } else if (clazz.equals(ClassType.of(BigDecimal.class))) {
             return Scalars.GraphQLBigDecimal;
-        } else if (scalarMap.containsKey(clazz)) {
+        }
+        return otherClassToScalarType(clazz);
+    }
+
+    private GraphQLScalarType otherClassToScalarType(Type<?> clazz) {
+        if (scalarMap.containsKey(clazz)) {
             return scalarMap.get(clazz);
-        } else if (ClassType.DATE_TYPE.isAssignableFrom(clazz)) {
+        }
+        if (ClassType.DATE_TYPE.isAssignableFrom(clazz)) {
             return GraphQLScalars.GRAPHQL_DATE_TYPE;
         }
         return null;
@@ -449,7 +450,7 @@ public class GraphQLConversionUtils {
     }
 
     /**
-     * Build an Argument list object for the given attribute
+     * Build an Argument list object for the given attribute.
      * @param entityClass The Entity class to which this attribute belongs to.
      * @param attribute The name of the attribute.
      * @param fetcher The data fetcher to associated with the newly created GraphQL Query Type
@@ -465,6 +466,26 @@ public class GraphQLConversionUtils {
                 .map(argumentType -> newArgument()
                         .name(argumentType.getName())
                         .type(fetchScalarOrObjectInput(argumentType.getType()))
+                        .defaultValue(argumentType.getDefaultValue())
+                        .build())
+                .collect(Collectors.toList());
+
+    }
+
+    /**
+     * Build an Argument list object for the given entity.
+     * @param entityClass The Entity class to which this attribute belongs to.
+     * @param dictionary The dictionary that contains the runtime type information for the parent class.
+     * @return Newly created GraphQLArgument Collection for the given entity
+     */
+    public List<GraphQLArgument> entityArgumentToQueryObject(Type<?> entityClass,
+                                                                EntityDictionary dictionary) {
+        return dictionary.getEntityArguments(entityClass)
+                .stream()
+                .map(argumentType -> newArgument()
+                        .name(argumentType.getName())
+                        .type(fetchScalarOrObjectInput(argumentType.getType()))
+                        .defaultValue(argumentType.getDefaultValue())
                         .build())
                 .collect(Collectors.toList());
 

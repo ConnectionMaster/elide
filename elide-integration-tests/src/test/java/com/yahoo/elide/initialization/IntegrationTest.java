@@ -8,12 +8,14 @@ package com.yahoo.elide.initialization;
 import static io.restassured.RestAssured.get;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.fail;
+
 import com.yahoo.elide.core.datastore.DataStore;
 import com.yahoo.elide.core.datastore.test.DataStoreTestHarness;
 import com.yahoo.elide.core.exceptions.HttpStatus;
 import com.yahoo.elide.jsonapi.JsonApiMapper;
 import com.yahoo.elide.jsonapi.models.JsonApiDocument;
 import com.yahoo.elide.jsonapi.resources.JsonApiEndpoint;
+import com.yahoo.elide.test.jsonapi.elements.Data;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.JsonNode;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -23,9 +25,14 @@ import org.eclipse.jetty.servlet.ServletContextHandler;
 import org.eclipse.jetty.servlet.ServletHolder;
 import org.glassfish.jersey.server.ResourceConfig;
 import org.glassfish.jersey.servlet.ServletContainer;
+import org.hamcrest.CustomTypeSafeMatcher;
+import org.json.JSONException;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.TestInstance;
+import org.skyscreamer.jsonassert.JSONCompare;
+import org.skyscreamer.jsonassert.JSONCompareMode;
+
 import io.restassured.RestAssured;
 import lombok.extern.slf4j.Slf4j;
 
@@ -44,6 +51,7 @@ public abstract class IntegrationTest {
     protected final ObjectMapper mapper = new ObjectMapper();
     protected DataStore dataStore = null;
     private Server server = null;
+    protected final ServletContextHandler servletContextHandler = new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
 
     private final String resourceConfig;
     private String packageName;
@@ -62,9 +70,7 @@ public abstract class IntegrationTest {
         this.resourceConfig = resourceConfig.getName();
         this.packageName = packageName;
 
-        if (dataStoreHarness == null) {
-            dataStoreHarness = createHarness();
-        }
+        dataStoreHarness = createHarness();
         this.dataStore = dataStoreHarness.getDataStore();
 
         try {
@@ -75,6 +81,10 @@ public abstract class IntegrationTest {
     }
 
     protected DataStoreTestHarness createHarness() {
+        if (dataStoreHarness != null) {
+            return dataStoreHarness;
+        }
+
         try {
             final String dataStoreSupplierName = System.getProperty("dataStoreHarness");
 
@@ -110,16 +120,14 @@ public abstract class IntegrationTest {
         RestAssured.enableLoggingOfRequestAndResponseIfValidationFails();
 
         // port randomly picked in pom.xml
-        String restassuredPort = System.getProperty("restassured.port", System.getenv("restassured.port"));
-        RestAssured.port =
-                Integer.parseInt(StringUtils.isNotEmpty(restassuredPort) ? restassuredPort : "9999");
+        RestAssured.port = getRestAssuredPort();
 
         // embedded jetty server
         Server server = new Server(RestAssured.port);
-        final ServletContextHandler servletContextHandler =
-                new ServletContextHandler(ServletContextHandler.NO_SESSIONS);
         servletContextHandler.setContextPath("/");
         server.setHandler(servletContextHandler);
+
+        modifyServletContextHandler();
 
         final ServletHolder servletHolder = servletContextHandler.addServlet(ServletContainer.class, "/*");
         servletHolder.setInitOrder(1);
@@ -151,6 +159,7 @@ public abstract class IntegrationTest {
 
     @AfterAll
     public final void afterAll() {
+        dataStoreHarness = null;
         log.debug("...Stopping Server...");
         try {
             server.stop();
@@ -167,5 +176,34 @@ public abstract class IntegrationTest {
         } catch (IOException e) {
             fail("\n" + actual + "\n" + expected + "\n", e);
         }
+    }
+
+    public static Integer getRestAssuredPort() {
+        String restassuredPort = System.getProperty("restassured.port", System.getenv("restassured.port"));
+        return Integer.parseInt(StringUtils.isNotEmpty(restassuredPort) ? restassuredPort : "9999");
+    }
+
+    public void modifyServletContextHandler() {
+        // Do Nothing
+    }
+
+    protected CustomTypeSafeMatcher<String> jsonEquals(Object expected, boolean strict) {
+        String expectedString;
+        if (expected instanceof Data) {
+            expectedString = ((Data) expected).toJSON();
+        } else {
+            expectedString = expected.toString();
+        }
+        return new CustomTypeSafeMatcher<String>(expectedString) {
+            @Override
+            protected boolean matchesSafely(String actual) {
+                try {
+                    return JSONCompare.compareJSON(expectedString, actual,
+                            strict ? JSONCompareMode.STRICT : JSONCompareMode.LENIENT).passed();
+                } catch (JSONException e) {
+                    return false;
+                }
+            }
+        };
     }
 }

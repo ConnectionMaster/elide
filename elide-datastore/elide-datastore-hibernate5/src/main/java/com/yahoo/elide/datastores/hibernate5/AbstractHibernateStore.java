@@ -5,10 +5,10 @@
  */
 package com.yahoo.elide.datastores.hibernate5;
 
-import static com.yahoo.elide.core.utils.TypeHelper.getClassType;
 import com.yahoo.elide.core.datastore.DataStoreTransaction;
 import com.yahoo.elide.core.datastore.JPQLDataStore;
 import com.yahoo.elide.core.dictionary.EntityDictionary;
+import com.yahoo.elide.core.type.ClassType;
 import com.yahoo.elide.core.type.Type;
 
 import org.hibernate.ScrollMode;
@@ -95,7 +95,8 @@ public abstract class AbstractHibernateStore implements JPQLDataStore {
         public AbstractHibernateStore build() {
             if (sessionFactory != null) {
                 return new HibernateSessionFactoryStore(sessionFactory, isScrollEnabled, scrollMode);
-            } else if (emf != null) {
+            }
+            if (emf != null) {
                 return new HibernateEntityManagerStore(emf, isScrollEnabled, scrollMode);
             }
             throw new IllegalStateException("Either an EntityManager or SessionFactory is required!");
@@ -111,7 +112,7 @@ public abstract class AbstractHibernateStore implements JPQLDataStore {
     }
 
     protected void bindEntity(EntityDictionary dictionary, EntityType<?> type) {
-        Type<?> mappedClass = getClassType(type.getJavaType());
+        Type<?> mappedClass = ClassType.of(type.getJavaType());
 
         bindEntityClass(mappedClass, dictionary);
     }

@@ -5,7 +5,7 @@
  */
 package com.yahoo.elide.datastores.aggregation.filter.visitor;
 
-import static com.yahoo.elide.core.utils.TypeHelper.getClassType;
+import static com.yahoo.elide.datastores.aggregation.dynamic.NamespacePackage.DEFAULT_NAMESPACE;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertFalse;
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -18,10 +18,12 @@ import com.yahoo.elide.core.filter.expression.FilterExpressionVisitor;
 import com.yahoo.elide.core.filter.expression.NotFilterExpression;
 import com.yahoo.elide.core.filter.expression.OrFilterExpression;
 import com.yahoo.elide.core.filter.predicates.FilterPredicate;
-import com.yahoo.elide.datastores.aggregation.example.Country;
+import com.yahoo.elide.core.type.ClassType;
 import com.yahoo.elide.datastores.aggregation.example.Player;
 import com.yahoo.elide.datastores.aggregation.example.PlayerStats;
-import com.yahoo.elide.datastores.aggregation.example.SubCountry;
+import com.yahoo.elide.datastores.aggregation.example.dimensions.Country;
+import com.yahoo.elide.datastores.aggregation.example.dimensions.SubCountry;
+import com.yahoo.elide.datastores.aggregation.metadata.models.Namespace;
 import com.yahoo.elide.datastores.aggregation.metadata.models.Table;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.metadata.SQLTable;
 import org.junit.jupiter.api.BeforeAll;
@@ -32,7 +34,7 @@ import java.util.Collections;
 public class SplitFilterExpressionVisitorTest {
 
     private static final FilterPredicate WHERE_PREDICATE = new FilterPredicate(
-            new Path.PathElement(PlayerStats.class, String.class, "id"),
+            new Path.PathElement(PlayerStats.class, String.class, "overallRating"),
             Operator.IN,
             Collections.singletonList("foo")
     );
@@ -52,7 +54,8 @@ public class SplitFilterExpressionVisitorTest {
         entityDictionary.bindEntity(SubCountry.class);
         entityDictionary.bindEntity(Player.class);
 
-        Table table = new SQLTable(getClassType(PlayerStats.class), entityDictionary);
+        Namespace namespace = new Namespace(DEFAULT_NAMESPACE);
+        Table table = new SQLTable(namespace, ClassType.of(PlayerStats.class), entityDictionary);
         splitFilterExpressionVisitor = new SplitFilterExpressionVisitor(table);
     }
 
@@ -61,7 +64,7 @@ public class SplitFilterExpressionVisitorTest {
         // predicate should be a WHERE
         assertTrue(splitFilterExpressionVisitor.visitPredicate(WHERE_PREDICATE).isPureWhere());
         assertEquals(
-                "playerStats.id IN [foo]",
+                "playerStats.overallRating IN [foo]",
                 splitFilterExpressionVisitor.visitPredicate(WHERE_PREDICATE).getWhereExpression().toString()
         );
         assertFalse(splitFilterExpressionVisitor.visitPredicate(WHERE_PREDICATE).isPureHaving());
@@ -82,7 +85,7 @@ public class SplitFilterExpressionVisitorTest {
         // pure-W AND pure-W
         AndFilterExpression filterExpression = new AndFilterExpression(WHERE_PREDICATE, WHERE_PREDICATE);
         assertEquals(
-                "(playerStats.id IN [foo] AND playerStats.id IN [foo])",
+                "(playerStats.overallRating IN [foo] AND playerStats.overallRating IN [foo])",
                 splitFilterExpressionVisitor.visitAndExpression(filterExpression).getWhereExpression().toString()
         );
         assertNull(splitFilterExpressionVisitor.visitAndExpression(filterExpression).getHavingExpression());
@@ -90,7 +93,7 @@ public class SplitFilterExpressionVisitorTest {
         // pure-H AND pure-W
         filterExpression = new AndFilterExpression(HAVING_PREDICATE, WHERE_PREDICATE);
         assertEquals(
-                "playerStats.id IN [foo]",
+                "playerStats.overallRating IN [foo]",
                 splitFilterExpressionVisitor.visitAndExpression(filterExpression).getWhereExpression().toString()
         );
         assertEquals(
@@ -101,7 +104,7 @@ public class SplitFilterExpressionVisitorTest {
         // pure-W AND pure-H
         filterExpression = new AndFilterExpression(WHERE_PREDICATE, HAVING_PREDICATE);
         assertEquals(
-                "playerStats.id IN [foo]",
+                "playerStats.overallRating IN [foo]",
                 splitFilterExpressionVisitor.visitAndExpression(filterExpression).getWhereExpression().toString()
         );
         assertEquals(
@@ -113,7 +116,7 @@ public class SplitFilterExpressionVisitorTest {
         AndFilterExpression and1 = new AndFilterExpression(HAVING_PREDICATE, WHERE_PREDICATE);
         AndFilterExpression and2 = new AndFilterExpression(and1, HAVING_PREDICATE);
         assertEquals(
-                "playerStats.id IN [foo]",
+                "playerStats.overallRating IN [foo]",
                 splitFilterExpressionVisitor.visitAndExpression(and2).getWhereExpression().toString()
         );
         assertEquals(
@@ -125,7 +128,7 @@ public class SplitFilterExpressionVisitorTest {
         OrFilterExpression or = new OrFilterExpression(HAVING_PREDICATE, HAVING_PREDICATE);
         AndFilterExpression and = new AndFilterExpression(or, WHERE_PREDICATE);
         assertEquals(
-                "playerStats.id IN [foo]",
+                "playerStats.overallRating IN [foo]",
                 splitFilterExpressionVisitor.visitAndExpression(and).getWhereExpression().toString()
         );
         assertEquals(
@@ -139,7 +142,7 @@ public class SplitFilterExpressionVisitorTest {
         // pure-W OR pure-W
         OrFilterExpression filterExpression = new OrFilterExpression(WHERE_PREDICATE, WHERE_PREDICATE);
         assertEquals(
-                "(playerStats.id IN [foo] OR playerStats.id IN [foo])",
+                "(playerStats.overallRating IN [foo] OR playerStats.overallRating IN [foo])",
                 splitFilterExpressionVisitor.visitOrExpression(filterExpression).getWhereExpression().toString()
         );
         assertNull(splitFilterExpressionVisitor.visitOrExpression(filterExpression).getHavingExpression());
@@ -148,7 +151,7 @@ public class SplitFilterExpressionVisitorTest {
         OrFilterExpression or = new OrFilterExpression(HAVING_PREDICATE, WHERE_PREDICATE);
         assertNull(splitFilterExpressionVisitor.visitOrExpression(or).getWhereExpression());
         assertEquals(
-                "(playerStats.highScore GT [99] OR playerStats.id IN [foo])",
+                "(playerStats.highScore GT [99] OR playerStats.overallRating IN [foo])",
                 splitFilterExpressionVisitor.visitOrExpression(or).getHavingExpression().toString()
         );
 
@@ -157,7 +160,7 @@ public class SplitFilterExpressionVisitorTest {
         or = new OrFilterExpression(and, WHERE_PREDICATE);
         assertNull(splitFilterExpressionVisitor.visitOrExpression(or).getWhereExpression());
         assertEquals(
-                "((playerStats.id IN [foo] AND playerStats.highScore GT [99]) OR playerStats.id IN [foo])",
+                "((playerStats.overallRating IN [foo] AND playerStats.highScore GT [99]) OR playerStats.overallRating IN [foo])",
                 splitFilterExpressionVisitor.visitOrExpression(or).getHavingExpression().toString()
         );
     }
@@ -169,7 +172,7 @@ public class SplitFilterExpressionVisitorTest {
         );
         assertNull(splitFilterExpressionVisitor.visitNotExpression(notExpression).getWhereExpression());
         assertEquals(
-                "(playerStats.id NOT [foo] OR playerStats.highScore LE [99])",
+                "(playerStats.overallRating NOT [foo] OR playerStats.highScore LE [99])",
                 splitFilterExpressionVisitor.visitNotExpression(notExpression).getHavingExpression().toString()
         );
 

@@ -5,13 +5,16 @@
  */
 package com.yahoo.elide.datastores.aggregation.query;
 
+import com.yahoo.elide.datastores.aggregation.metadata.MetaDataStore;
 import com.google.common.collect.Streams;
+import org.apache.commons.lang3.tuple.Pair;
 import lombok.Builder;
 import lombok.NonNull;
 import lombok.Singular;
 import lombok.Value;
 
 import java.util.LinkedHashSet;
+import java.util.List;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -27,15 +30,15 @@ public class QueryPlan implements Queryable {
 
     @Singular
     @NonNull
-    private Set<MetricProjection> metricProjections;
+    private List<MetricProjection> metricProjections;
 
     @Singular
     @NonNull
-    private Set<ColumnProjection> dimensionProjections;
+    private List<DimensionProjection> dimensionProjections;
 
     @Singular
     @NonNull
-    private Set<TimeDimensionProjection> timeDimensionProjections;
+    private List<TimeDimensionProjection> timeDimensionProjections;
 
     /**
      * Merges two query plans together.  The order of merged metrics and dimensions is preserved such that
@@ -43,7 +46,7 @@ public class QueryPlan implements Queryable {
      * @param other The other query to merge.
      * @return A new merged query plan.
      */
-    public QueryPlan merge(QueryPlan other) {
+    public QueryPlan merge(QueryPlan other, MetaDataStore metaDataStore) {
         QueryPlan self = this;
 
         if (other == null) {
@@ -51,11 +54,15 @@ public class QueryPlan implements Queryable {
         }
 
         while (other.nestDepth() > self.nestDepth()) {
-            self = self.nest();
+            //TODO - update the reference table on each call to nest.
+            //Needed for nesting depth > 2
+            self = self.nest(metaDataStore);
         }
 
         while (self.nestDepth() > other.nestDepth()) {
-            other = other.nest();
+            //TODO - update the reference table on each call to nest.
+            //Needed for nesting depth > 2
+            other = other.nest(metaDataStore);
         }
 
         assert (self.isNested() || getSource().equals(other.getSource()));
@@ -66,60 +73,95 @@ public class QueryPlan implements Queryable {
         Set<TimeDimensionProjection> timeDimensions = Streams.concat(other.timeDimensionProjections.stream(),
                 self.timeDimensionProjections.stream()).collect(Collectors.toCollection(LinkedHashSet::new));
 
-        Set<ColumnProjection> dimensions = Streams.concat(other.dimensionProjections.stream(),
+        Set<DimensionProjection> dimensions = Streams.concat(other.dimensionProjections.stream(),
                 self.dimensionProjections.stream()).collect(Collectors.toCollection(LinkedHashSet::new));
 
         if (!self.isNested()) {
             return QueryPlan.builder()
                     .source(self.getSource())
-                    .metricProjections(withSource(self.getSource(), metrics))
-                    .dimensionProjections(withSource(self.getSource(), dimensions))
-                    .timeDimensionProjections(withSource(self.getSource(), timeDimensions))
-                    .build();
-        } else {
-            Queryable mergedSource = ((QueryPlan) self.getSource()).merge((QueryPlan) other.getSource());
-            return QueryPlan.builder()
-                    .source(mergedSource)
-                    .metricProjections(withSource(self.getSource(), metrics))
-                    .dimensionProjections(withSource(self.getSource(), dimensions))
-                    .timeDimensionProjections(withSource(self.getSource(), timeDimensions))
+                    .metricProjections(metrics)
+                    .dimensionProjections(dimensions)
+                    .timeDimensionProjections(timeDimensions)
                     .build();
         }
-    }
-
-    public QueryPlan nest() {
+        Queryable mergedSource = ((QueryPlan) self.getSource()).merge((QueryPlan) other.getSource(), metaDataStore);
         return QueryPlan.builder()
-                .source(this)
-                .metricProjections(nestColumnProjection(this, metricProjections))
-                .dimensionProjections(nestColumnProjection(this, dimensionProjections))
-                .timeDimensionProjections(nestColumnProjection(this, timeDimensionProjections))
+                .source(mergedSource)
+                .metricProjections(metrics)
+                .dimensionProjections(dimensions)
+                .timeDimensionProjections(timeDimensions)
                 .build();
     }
 
     /**
-     * Makes of a copy of a set of columns all with a new source.
-     * @param source The new source.
-     * @param columns The columns to copy.
-     * @param <T> The column projection type.
-     * @return An ordered set of the column copies.
+     * Tests whether or not this plan can be nested.
+     * @param metaDataStore MetaDataStore.
+     * @return True if the projection can be nested.  False otherwise.
      */
-    public static <T extends ColumnProjection> Set<T> withSource(Queryable source, Set<T> columns) {
-        return (Set<T>) columns.stream()
-                .map(column -> column.withSource(source))
-                .collect(Collectors.toCollection(LinkedHashSet::new));
+    public boolean canNest(MetaDataStore metaDataStore) {
+        return getColumnProjections().stream().allMatch(projection -> projection.canNest(source, metaDataStore));
     }
 
     /**
-     * Makes of a copy of a set of columns that are being nested in a new parent.  The column expressions are
-     * changed to reference the columns by name.
-     * @param parentSource The new parent source.
-     * @param columns The columns to copy.
-     * @param <T> The column projection type.
-     * @return An ordered set of the column copies.
+     * Breaks a flat query into a nested query.  There are multiple approaches for how to do this, but
+     * this kind of nesting requires aggregation to happen both in the inner and outer queries.  This allows
+     * query plans with two-pass aggregations to be merged with simpler one-pass aggregation plans.
+     *
+     * The nesting performed here attempts to perform all joins in the inner query.
+     *
+     * @param metaDataStore MetaDataStore.
+     * @return A nested query plan.
      */
-    public static <T extends ColumnProjection> Set<T> nestColumnProjection(Queryable parentSource, Set<T> columns) {
-        return (Set<T>) columns.stream()
-                .map(column -> column.withSourceAndExpression(parentSource, "{{" + column.getName() + "}}"))
+    public QueryPlan nest(MetaDataStore metaDataStore) {
+        if (!canNest(metaDataStore)) {
+            throw new UnsupportedOperationException("Cannot nest this query plan");
+        }
+
+        Set<Pair<ColumnProjection, Set<ColumnProjection>>> nestedMetrics = metricProjections.stream()
+                .map(projection -> projection.nest(source, metaDataStore, false))
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        Set<Pair<ColumnProjection, Set<ColumnProjection>>> nestedDimensions = dimensionProjections.stream()
+                .map(projection -> projection.nest(source, metaDataStore, false))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        Set<Pair<ColumnProjection, Set<ColumnProjection>>> nestedTimeDimensions = timeDimensionProjections.stream()
+                .map(projection -> projection.nest(source, metaDataStore, false))
+                .collect(Collectors.toCollection(LinkedHashSet::new));
+
+        QueryPlan inner = QueryPlan.builder()
+                .source(this.getSource())
+                .metricProjections(nestedMetrics.stream()
+                        .map(Pair::getRight)
+                        .flatMap(Set::stream)
+                        .map(MetricProjection.class::cast)
+                        .collect(Collectors.toCollection(LinkedHashSet::new)))
+                .dimensionProjections(nestedDimensions.stream()
+                        .map(Pair::getRight)
+                        .flatMap(Set::stream)
+                        .map(DimensionProjection.class::cast)
+                        .collect(Collectors.toCollection(LinkedHashSet::new)))
+                .timeDimensionProjections(nestedTimeDimensions.stream()
+                        .map(Pair::getRight)
+                        .flatMap(Set::stream)
+                        .map(TimeDimensionProjection.class::cast)
+                        .collect(Collectors.toCollection(LinkedHashSet::new)))
+                .build();
+
+        return QueryPlan.builder()
+                .source(inner)
+                .metricProjections(nestedMetrics.stream()
+                        .map(Pair::getLeft)
+                        .map(MetricProjection.class::cast)
+                        .collect(Collectors.toCollection(LinkedHashSet::new)))
+                .dimensionProjections(nestedDimensions.stream()
+                        .map(Pair::getLeft)
+                        .map(DimensionProjection.class::cast)
+                        .collect(Collectors.toCollection(LinkedHashSet::new)))
+                .timeDimensionProjections(nestedTimeDimensions.stream()
+                        .map(Pair::getLeft)
+                        .map(TimeDimensionProjection.class::cast)
+                        .collect(Collectors.toCollection(LinkedHashSet::new)))
+                .build();
     }
 }

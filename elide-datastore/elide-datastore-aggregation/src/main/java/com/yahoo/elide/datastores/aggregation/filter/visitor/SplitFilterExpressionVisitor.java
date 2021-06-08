@@ -119,7 +119,8 @@ public class SplitFilterExpressionVisitor implements FilterExpressionVisitor<Fil
                             right.getWhereExpression()
                     )
             );
-        } else if (left.isPureHaving() && right.isPureHaving()) {
+        }
+        if (left.isPureHaving() && right.isPureHaving()) {
             // pure-H1 AND pure-H2 = HAVING (C1 AND C2) = pure-H
             return FilterConstraints.pureHaving(
                     new AndFilterExpression(
@@ -127,19 +128,18 @@ public class SplitFilterExpressionVisitor implements FilterExpressionVisitor<Fil
                             right.getHavingExpression()
                     )
             );
-        } else {
-            // all of the rests are mix-HW
-            return FilterConstraints.withWhereAndHaving(
-                    AndFilterExpression.fromPair(
-                            left.getWhereExpression(),
-                            right.getWhereExpression()
-                    ),
-                    AndFilterExpression.fromPair(
-                            left.getHavingExpression(),
-                            right.getHavingExpression()
-                    )
-            );
         }
+        // all of the rests are mix-HW
+        return FilterConstraints.withWhereAndHaving(
+                AndFilterExpression.fromPair(
+                        left.getWhereExpression(),
+                        right.getWhereExpression()
+                ),
+                AndFilterExpression.fromPair(
+                        left.getHavingExpression(),
+                        right.getHavingExpression()
+                )
+        );
     }
 
     @Override
@@ -178,21 +178,20 @@ public class SplitFilterExpressionVisitor implements FilterExpressionVisitor<Fil
                             right.getWhereExpression()
                     )
             );
-        }  else {
-            // all of the rests are pure-H
-            return FilterConstraints.pureHaving(
-                    OrFilterExpression.fromPair(
-                            AndFilterExpression.fromPair(
-                                    left.getWhereExpression(),
-                                    left.getHavingExpression()
-                            ),
-                            AndFilterExpression.fromPair(
-                                    right.getWhereExpression(),
-                                    right.getHavingExpression()
-                            )
-                    )
-            );
         }
+        // all of the rests are pure-H
+        return FilterConstraints.pureHaving(
+                OrFilterExpression.fromPair(
+                        AndFilterExpression.fromPair(
+                                left.getWhereExpression(),
+                                left.getHavingExpression()
+                        ),
+                        AndFilterExpression.fromPair(
+                                right.getWhereExpression(),
+                                right.getHavingExpression()
+                        )
+                )
+        );
     }
 
     @Override
@@ -201,21 +200,21 @@ public class SplitFilterExpressionVisitor implements FilterExpressionVisitor<Fil
 
         if (normalized instanceof AndFilterExpression) {
             return visitAndExpression((AndFilterExpression) normalized);
-        } else if (normalized instanceof OrFilterExpression) {
+        }
+        if (normalized instanceof OrFilterExpression) {
             return visitOrExpression((OrFilterExpression) normalized);
-        } else if (normalized instanceof NotFilterExpression) {
+        }
+        if (normalized instanceof NotFilterExpression) {
             FilterConstraints negatedConstraint = visitNotExpression((NotFilterExpression) normalized);
 
             if (negatedConstraint.isPureWhere()) {
                 return FilterConstraints.pureWhere(new NotFilterExpression(negatedConstraint.getWhereExpression()));
-            } else {
-                // It is not possible to have a mixed where/having for a NotFilterExpression after normalization
-                // so this must be a pure HAVING
-                return FilterConstraints.pureHaving(new NotFilterExpression(negatedConstraint.getHavingExpression()));
             }
-        } else {
-            return visitPredicate((FilterPredicate) normalized);
+            // It is not possible to have a mixed where/having for a NotFilterExpression after normalization
+            // so this must be a pure HAVING
+            return FilterConstraints.pureHaving(new NotFilterExpression(negatedConstraint.getHavingExpression()));
         }
+        return visitPredicate((FilterPredicate) normalized);
     }
 
     /**

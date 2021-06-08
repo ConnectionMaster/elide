@@ -77,7 +77,7 @@ public abstract class HttpStatusException extends RuntimeException {
 
     public String getVerboseMessage() {
         return verboseMessageSupplier.map(Supplier::get)
-                .orElse(getMessage());
+                .orElseGet(this::getMessage);
     }
 
     public int getStatus() {
@@ -87,7 +87,7 @@ public abstract class HttpStatusException extends RuntimeException {
     @Override
     public String toString() {
         String message = getMessage();
-        String className = EntityDictionary.getSimpleName(new ClassType(getClass()));
+        String className = EntityDictionary.getSimpleName(ClassType.of(getClass()));
 
         if (message == null) {
             message = className;

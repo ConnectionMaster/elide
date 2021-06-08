@@ -18,6 +18,8 @@ import com.yahoo.elide.core.security.checks.OperationCheck;
 import com.yahoo.elide.core.security.checks.UserCheck;
 import com.yahoo.elide.core.security.permissions.ExpressionResult;
 import com.yahoo.elide.core.security.permissions.ExpressionResultCache;
+
+import lombok.Getter;
 import lombok.extern.slf4j.Slf4j;
 
 import java.util.Optional;
@@ -28,6 +30,7 @@ import java.util.Optional;
 @Slf4j
 public class CheckExpression implements Expression {
 
+    @Getter
     protected final Check check;
     protected final PersistentResource resource;
     protected final RequestScope requestScope;
@@ -79,6 +82,11 @@ public class CheckExpression implements Expression {
             return result;
         }
 
+        if (mode == EvaluationMode.INLINE_CHECKS_ONLY && check.runAtCommit()) {
+            result = DEFERRED;
+            return result;
+        }
+
         // If we have a valid change spec, do not cache the result or look for a cached result.
         if (changeSpec.isPresent()) {
             log.trace("-- Check has changespec: {}", changeSpec);
@@ -101,6 +109,11 @@ public class CheckExpression implements Expression {
 
         log.trace("-- Check returned with result: {}", result);
         return result;
+    }
+
+    @Override
+    public <T> T accept(ExpressionVisitor<T> visitor) {
+        return visitor.visitCheckExpression(this);
     }
 
     /**

@@ -6,9 +6,23 @@
 
 package com.yahoo.elide.datastores.aggregation.query;
 
+import com.yahoo.elide.core.filter.expression.FilterExpression;
+import com.yahoo.elide.core.filter.expression.PredicateExtractionVisitor;
+import com.yahoo.elide.core.filter.predicates.FilterPredicate;
+import com.yahoo.elide.core.request.Argument;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.ConnectionDetails;
+import com.yahoo.elide.datastores.aggregation.queryengines.sql.dialects.SQLDialect;
+import com.yahoo.elide.datastores.aggregation.queryengines.sql.metadata.SQLJoin;
+import com.yahoo.elide.datastores.aggregation.queryengines.sql.query.SQLColumnProjection;
 import com.google.common.collect.Streams;
 
+import java.util.ArrayList;
+import java.util.Collection;
+import java.util.Collections;
+import java.util.HashMap;
+import java.util.LinkedHashSet;
+import java.util.List;
+import java.util.Map;
 import java.util.Set;
 import java.util.stream.Collectors;
 
@@ -27,7 +41,7 @@ public interface Queryable {
     Queryable getSource();
 
     /**
-     * Every queryable needs an alias which uniquely identifies the queryable in an individual query
+     * Every queryable needs an alias which uniquely identifies the queryable in an individual query.
      * @return The alias
      */
     default String getAlias() {
@@ -36,7 +50,7 @@ public interface Queryable {
     }
 
     /**
-     * The name of the queryable
+     * The name of the queryable.
      * @return The name
      */
     default String getName() {
@@ -44,7 +58,7 @@ public interface Queryable {
     }
 
     /**
-     * The version of the queryable
+     * The version of the queryable.
      * @return The version
      */
     default String getVersion() {
@@ -52,22 +66,40 @@ public interface Queryable {
     }
 
     /**
-     * Looks up the alias for a particular column.
-     * @param columnName The name of the column.
-     * @return The alias for the given column.
-     */
-    default String getAlias(String columnName) {
-        return getAlias();
-    }
-
-    /**
      * Retrieves a column by name.
-     * @param name The name of the column.
+     * @param name The alias of the column.
      * @return The column.
      */
     default ColumnProjection getColumnProjection(String name) {
         return getColumnProjections().stream()
-                .filter(dim -> dim.getName().equals(name))
+                .filter(dim -> dim.getAlias().equals(name))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * Retrieves a column by name and arguments.
+     * @param name The alias of the column.
+     * @param arguments Arguments provided for the column.
+     * @return The column.
+     */
+    default ColumnProjection getColumnProjection(String name, Map<String, Argument> arguments, boolean isProjected) {
+        return getColumnProjections().stream()
+                .filter(dim -> dim.isProjected() == isProjected)
+                .filter(dim -> dim.getAlias().equals(name) && dim.getArguments().equals(arguments))
+                .findFirst()
+                .orElse(null);
+    }
+
+    /**
+     * Retrieves a column by name and arguments.
+     * @param name The alias of the column.
+     * @param arguments Arguments provided for the column.
+     * @return The column.
+     */
+    default ColumnProjection getColumnProjection(String name, Map<String, Argument> arguments) {
+        return getColumnProjections().stream()
+                .filter(dim -> dim.getAlias().equals(name) && dim.getArguments().equals(arguments))
                 .findFirst()
                 .orElse(null);
     }
@@ -77,9 +109,9 @@ public interface Queryable {
      * @param name The name of the dimension.
      * @return The dimension.
      */
-    default ColumnProjection getDimensionProjection(String name) {
+    default DimensionProjection getDimensionProjection(String name) {
         return getDimensionProjections().stream()
-                .filter(dim -> dim.getName().equals(name))
+                .filter(dim -> dim.getAlias().equals(name))
                 .findFirst()
                 .orElse(null);
     }
@@ -88,7 +120,7 @@ public interface Queryable {
      * Retrieves all the non-time dimensions.
      * @return The non-time dimensions.
      */
-    Set<ColumnProjection> getDimensionProjections();
+    List<DimensionProjection> getDimensionProjections();
 
     /**
      * Retrieves a metric by name.
@@ -97,7 +129,7 @@ public interface Queryable {
      */
     default MetricProjection getMetricProjection(String name) {
         return getMetricProjections().stream()
-                .filter(metric -> metric.getName().equals(name))
+                .filter(metric -> metric.getAlias().equals(name))
                 .findFirst()
                 .orElse(null);
     }
@@ -106,7 +138,7 @@ public interface Queryable {
      * Retrieves all the metrics.
      * @return The metrics.
      */
-    Set<MetricProjection> getMetricProjections();
+    List<MetricProjection> getMetricProjections();
 
     /**
      * Retrieves a time dimension by name.
@@ -115,7 +147,7 @@ public interface Queryable {
      */
     default TimeDimensionProjection getTimeDimensionProjection(String name) {
         return getTimeDimensionProjections().stream()
-                .filter(dim -> dim.getName().equals(name))
+                .filter(dim -> dim.getAlias().equals(name))
                 .findFirst()
                 .orElse(null);
     }
@@ -124,18 +156,52 @@ public interface Queryable {
      * Retrieves all the time dimensions.
      * @return The time dimensions.
      */
-    Set<TimeDimensionProjection> getTimeDimensionProjections();
+    List<TimeDimensionProjection> getTimeDimensionProjections();
 
     /**
      * Returns all the columns.
      * @return the columns.
      */
-    default Set<ColumnProjection> getColumnProjections() {
+    default List<ColumnProjection> getColumnProjections() {
         return Streams.concat(
                 getTimeDimensionProjections().stream(),
                 getDimensionProjections().stream(),
                 getMetricProjections().stream())
-                .collect(Collectors.toSet());
+                .collect(Collectors.toList());
+    }
+
+
+    default <T extends ColumnProjection> List<T> getFilterProjections(
+            FilterExpression expression,
+            Class<T> columnType
+    ) {
+        return getFilterProjections(expression).stream()
+                .filter(columnType::isInstance)
+                .map(columnType::cast)
+                .collect(Collectors.toList());
+    }
+
+    default List<ColumnProjection> getFilterProjections(FilterExpression expression) {
+        List<ColumnProjection> results = new ArrayList<>();
+        if (expression == null) {
+            return results;
+        }
+
+        Collection<FilterPredicate> predicates = expression.accept(new PredicateExtractionVisitor());
+
+        predicates.stream().forEach((predicate -> {
+            Map<String, Argument> arguments = new HashMap<>();
+
+            predicate.getPath().lastElement().get().getArguments().forEach(argument ->
+                    arguments.put(argument.getName(), argument)
+            );
+
+            ColumnProjection projection = getSource().getColumnProjection(predicate.getField(), arguments);
+
+            results.add((SQLColumnProjection) projection);
+        }));
+
+        return results;
     }
 
     /**
@@ -143,7 +209,7 @@ public interface Queryable {
      * @return the connectinon details
      */
     default ConnectionDetails getConnectionDetails() {
-        return getSource().getConnectionDetails();
+        return getRoot().getConnectionDetails();
     }
 
     /**
@@ -168,6 +234,27 @@ public interface Queryable {
     }
 
     /**
+     * Gets the root table for the queryable.
+     * @return the root table.
+     */
+    default Queryable getRoot() {
+        Queryable current = this;
+        while (current.isNested()) {
+            current = current.getSource();
+        }
+
+        return current.getSource();
+    }
+
+    /**
+     * Determines if this queryable is root table.
+     * @return true if this queryable is root table.
+     */
+    default boolean isRoot() {
+        return this == this.getRoot();
+    }
+
+    /**
      * Returns the depth of the nesting of this Queryable.
      * @return 0 for unnested.  Positive integer for nested..
      */
@@ -179,5 +266,78 @@ public interface Queryable {
             current = current.getSource();
         }
         return depth;
+    }
+
+    /**
+     * Get the joins associated with table source of this queryable.
+     * @return A map of join name and {@link SQLJoin}.
+     */
+    default Map<String, SQLJoin> getJoins() {
+        return this.getRoot().getJoins();
+    }
+
+    /**
+     * Get the join info for the given join column.
+     * @param joinName Join Name.
+     * @return {@link SQLJoin} for the given join column.
+     */
+    default SQLJoin getJoin(String joinName) {
+        return getJoins().get(joinName);
+    }
+
+    /**
+     * Check if table source of this queryable has the given join column.
+     * @param joinName Join Name.
+     * @return true if table source of this queryable has the given join column.
+     */
+    default boolean hasJoin(String joinName) {
+        return getJoins().containsKey(joinName);
+    }
+
+    /**
+     * Get the dialect info for the table source of this queryable.
+     * @return {@link SQLDialect} for the table source.
+     */
+    default SQLDialect getDialect() {
+        return getConnectionDetails().getDialect();
+    }
+
+    /**
+     * Converts a filter expression into a set of ColumnProjections.
+     * @param query The parent query.
+     * @param expression The filter expression to extract.
+     * @return A set of zero or more column projections with their arguments.
+     */
+    static Set<ColumnProjection> extractFilterProjections(Queryable query, FilterExpression expression) {
+        if (expression == null) {
+            return new LinkedHashSet<>();
+        }
+
+        Collection<FilterPredicate> predicates = expression.accept(new PredicateExtractionVisitor());
+
+        Set<ColumnProjection> filterProjections = new LinkedHashSet<>();
+        predicates.stream().forEach((predicate -> {
+            Map<String, Argument> arguments = new HashMap<>();
+
+            predicate.getPath().lastElement().get().getArguments().forEach(argument ->
+                    arguments.put(argument.getName(), argument)
+            );
+
+            ColumnProjection projection = query.getSource().getColumnProjection(predicate.getField(), arguments);
+
+            if (projection != null) {
+                filterProjections.add(projection);
+            }
+        }));
+
+        return filterProjections;
+    }
+
+    /**
+     * Gets the available arguments for this queryable.
+     * @return available arguments for this queryable as map of String and {@link Argument}.
+     */
+    default Map<String, Argument> getArguments() {
+        return Collections.emptyMap();
     }
 }

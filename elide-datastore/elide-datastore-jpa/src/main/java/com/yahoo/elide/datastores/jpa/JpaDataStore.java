@@ -5,12 +5,15 @@
  */
 package com.yahoo.elide.datastores.jpa;
 
-import static com.yahoo.elide.core.utils.TypeHelper.getClassType;
 import com.yahoo.elide.core.datastore.DataStoreTransaction;
 import com.yahoo.elide.core.datastore.JPQLDataStore;
 import com.yahoo.elide.core.dictionary.EntityDictionary;
+import com.yahoo.elide.core.type.ClassType;
 import com.yahoo.elide.core.type.Type;
+import com.yahoo.elide.datastores.jpa.porting.QueryLogger;
 import com.yahoo.elide.datastores.jpa.transaction.JpaTransaction;
+
+import lombok.extern.slf4j.Slf4j;
 
 import java.util.HashSet;
 import java.util.Set;
@@ -20,23 +23,36 @@ import javax.persistence.metamodel.EntityType;
 /**
  * Implementation for JPA EntityManager data store.
  */
+@Slf4j
 public class JpaDataStore implements JPQLDataStore {
+    public static final QueryLogger DEFAULT_LOGGER = (query) -> log.debug("HQL Query: {}", query);
+
     protected final EntityManagerSupplier entityManagerSupplier;
     protected final JpaTransactionSupplier readTransactionSupplier;
     protected final JpaTransactionSupplier writeTransactionSupplier;
     protected final Set<Type<?>> modelsToBind;
+    protected final QueryLogger logger;
+
+    public JpaDataStore(EntityManagerSupplier entityManagerSupplier,
+                        JpaTransactionSupplier readTransactionSupplier,
+                        JpaTransactionSupplier writeTransactionSupplier,
+                        QueryLogger logger,
+                        Type<?> ... models) {
+        this.entityManagerSupplier = entityManagerSupplier;
+        this.readTransactionSupplier = readTransactionSupplier;
+        this.writeTransactionSupplier = writeTransactionSupplier;
+        this.logger = logger;
+        this.modelsToBind = new HashSet<>();
+        for (Type<?> model : models) {
+            modelsToBind.add(model);
+        }
+    }
 
     public JpaDataStore(EntityManagerSupplier entityManagerSupplier,
                         JpaTransactionSupplier readTransactionSupplier,
                         JpaTransactionSupplier writeTransactionSupplier,
                         Type<?> ... models) {
-        this.entityManagerSupplier = entityManagerSupplier;
-        this.readTransactionSupplier = readTransactionSupplier;
-        this.writeTransactionSupplier = writeTransactionSupplier;
-        this.modelsToBind = new HashSet<>();
-        for (Type<?> model : models) {
-            modelsToBind.add(model);
-        }
+        this(entityManagerSupplier, readTransactionSupplier, writeTransactionSupplier, DEFAULT_LOGGER, models);
     }
 
 
@@ -57,7 +73,7 @@ public class JpaDataStore implements JPQLDataStore {
         // Use the entities defined in the entity manager factory.
         for (EntityType type : entityManagerSupplier.get().getMetamodel().getEntities()) {
             try {
-                Type<?> mappedClass = getClassType(type.getJavaType());
+                Type<?> mappedClass = ClassType.of(type.getJavaType());
                 // Ignore this result. We are just checking to see if it throws an exception meaning that
                 // provided class was _not_ an entity.
                 dictionary.lookupEntityClass(mappedClass);

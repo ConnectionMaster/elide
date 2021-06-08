@@ -78,9 +78,6 @@ public class SubCollectionPageTotalsQueryBuilder extends AbstractHQLQueryBuilder
             // Copy and scope the filter expression for the join clause
             ExpressionScopingVisitor visitor = new ExpressionScopingVisitor(
                     new PathElement(parentType, relationship.getChildType(), relationship.getRelationshipName()));
-            if (filterExpression == null) {
-                throw new IllegalStateException("Filter expression cloned to null");
-            }
 
             FilterExpression scoped = filterExpression.accept(visitor);
 
@@ -98,7 +95,7 @@ public class SubCollectionPageTotalsQueryBuilder extends AbstractHQLQueryBuilder
             joinClause = getJoinClauseFromFilters(joinedExpression, true);
 
             //Build the WHERE clause
-            filterClause = new FilterTranslator().apply(joinedExpression, USE_ALIAS);
+            filterClause = new FilterTranslator(dictionary).apply(joinedExpression, USE_ALIAS);
         } else {
 
             //If there is no filter, we still need to explicitly JOIN book and authors.
@@ -109,7 +106,7 @@ public class SubCollectionPageTotalsQueryBuilder extends AbstractHQLQueryBuilder
                     + relationshipAlias
                     + SPACE;
 
-            filterClause = new FilterTranslator().apply(idExpression, USE_ALIAS);
+            filterClause = new FilterTranslator(dictionary).apply(idExpression, USE_ALIAS);
             predicates.add(idExpression);
         }
 

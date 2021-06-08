@@ -9,74 +9,65 @@ import com.yahoo.elide.annotation.Exclude;
 import com.yahoo.elide.annotation.Include;
 import com.yahoo.elide.core.dictionary.EntityDictionary;
 import com.yahoo.elide.core.type.Type;
-import com.yahoo.elide.datastores.aggregation.annotation.ColumnMeta;
 import com.yahoo.elide.datastores.aggregation.annotation.MetricFormula;
-import com.yahoo.elide.datastores.aggregation.query.QueryPlanResolver;
-
+import com.yahoo.elide.datastores.aggregation.query.MetricProjectionMaker;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
 
-import java.util.HashSet;
-import java.util.Set;
-import javax.persistence.ManyToOne;
-
 /**
  * Column which supports aggregation.
  */
-@Include(rootLevel = false, type = "metric")
+@Include(rootLevel = false, name = "metric")
 @Getter
 @EqualsAndHashCode(callSuper = true)
 @ToString
 public class Metric extends Column {
-    @ManyToOne
-    @ToString.Exclude
-    private final MetricFunction metricFunction;
-
     @Exclude
     @ToString.Exclude
-    private final QueryPlanResolver queryPlanResolver;
+    private final MetricProjectionMaker metricProjectionMaker;
+
+    public Metric(MetricProjectionMaker maker, Table table, String fieldName, EntityDictionary dictionary) {
+        super(table, fieldName, dictionary);
+        this.metricProjectionMaker = maker;
+    }
 
     public Metric(Table table, String fieldName, EntityDictionary dictionary) {
         super(table, fieldName, dictionary);
         Type<?> tableClass = dictionary.getEntityClass(table.getName(), table.getVersion());
 
-        ColumnMeta meta = dictionary.getAttributeOrRelationAnnotation(
-                tableClass,
-                ColumnMeta.class,
-                fieldName);
+        MetricFormula formula = dictionary.getAttributeOrRelationAnnotation(tableClass, MetricFormula.class, fieldName);
 
-        MetricFormula formula = dictionary.getAttributeOrRelationAnnotation(
-                tableClass,
-                MetricFormula.class,
-                fieldName);
+        verifyFormula(formula);
+        this.metricProjectionMaker = dictionary.getInjector().instantiate(formula.maker());
 
-        if (formula != null) {
-            this.metricFunction = constructMetricFunction(
-                    constructColumnName(tableClass, fieldName, dictionary) + "[" + fieldName + "]",
-                    meta == null ? null : meta.description(),
-                    new HashSet<>());
-
-            this.queryPlanResolver = dictionary.getInjector().instantiate(formula.queryPlan());
-            dictionary.getInjector().inject(this.queryPlanResolver);
-
-        } else {
-            throw new IllegalStateException("Trying to construct metric field "
-                    + getId() + " without @MetricFormula.");
-        }
+        dictionary.getInjector().inject(this.metricProjectionMaker);
     }
 
-    /**
-     * Dynamically construct a metric function
-     *
-     * @param id metric function id
-     * @param description meta description
-     * @param arguments function arguments
-     * @return a metric function instance
-     */
-    protected MetricFunction constructMetricFunction(String id,
-                                                     String description,
-                                                     Set<FunctionArgument> arguments) {
-        return new MetricFunction(id, description, arguments);
+    private void verifyFormula(MetricFormula formula) {
+        if (formula == null) {
+            throw new IllegalStateException("Trying to construct metric field " + getId() + " without @MetricFormula.");
+        }
+
+        String defaultValue;
+        Class<?> defaultMaker;
+
+        try {
+            defaultValue = (String) MetricFormula.class.getDeclaredMethod("value").getDefaultValue();
+            defaultMaker = (Class<?>) MetricFormula.class.getDeclaredMethod("maker").getDefaultValue();
+        } catch (NoSuchMethodException | SecurityException e) {
+            throw new IllegalStateException("Error encountered while constructing metric field: " + getId()
+                            + ". " + e.getMessage());
+        }
+
+        if (formula.value().equals(defaultValue) && formula.maker().equals(defaultMaker)) {
+            throw new IllegalStateException("Trying to construct metric field " + getId()
+                            + " with default values. Provide either value or maker in @MetricFormula.");
+        }
+
+        if (!formula.value().equals(defaultValue) && !formula.maker().equals(defaultMaker)) {
+            throw new IllegalStateException("Trying to construct metric field " + getId()
+                            + " with value and maker. Provide either one in @MetricFormula, both are not allowed.");
+        }
     }
 }

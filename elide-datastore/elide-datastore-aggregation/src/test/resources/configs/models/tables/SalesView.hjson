@@ -7,23 +7,34 @@
       dbConnectionName: SalesDBConnection
       cardinality: large
       readAccess: guest user
+      namespace: SalesNamespace
+      arguments:
+      [
+        { // An argument that can be used to divide orderTotal to convert orders in Millions, Thousands, etc.
+          name: denominator
+          type: DECIMAL
+          default: 1
+        }
+      ]
       joins:
       [
         {
           name: customer
           to: customerDetails
+          namespace: SalesNamespace
           type: Left
           // References Physical Columns
-          definition: '{{customer_id}} = {{ customer.id}}'
+          definition: '{{$customer_id}} = {{ customer.$id}}'
         }
         {
           name: delivery
           to: deliveryDetails
+          namespace: SalesNamespace
           kind: toOne
           // References Logical Columns, multiple join condition
           definition: '''
           {{ orderId}} = {{delivery.orderId}} AND
-          {{ delivery.delivered_on }} > '1970-01-01'
+          {{ delivery.$delivered_on }} > '1970-01-01'
           '''
         }
       ]
@@ -32,8 +43,17 @@
         {
           name: orderTotal
           type: DECIMAL
-          definition: 'SUM({{ order_total }})'
+          // TODO : Use Arguments
+          definition: 'SUM({{ $order_total }})'
           readAccess: admin.user
+          arguments:
+          [
+            { // An argument that can be used to divide orderTotal to convert orders in Millions, Thousands, etc.
+              name: precision
+              type: DECIMAL
+              default: 0.00
+            }
+          ]
         }
       ]
       dimensions:
@@ -41,13 +61,13 @@
         {
           name: orderId
           type: TEXT
-          definition: '{{ order_id }}'
+          definition: '{{ $order_id }}'
           readAccess: guest user
         }
         {
           name: courierName
           type: TEXT
-          definition: '{{delivery.courier_name}}'
+          definition: '{{delivery.$courier_name}}'
           readAccess: operator
         }
         {
@@ -62,7 +82,10 @@
           type: TEXT
           definition: '{{customer.region.region}}'
           readAccess: operator
-          tableSource: regionDetails.region
+          tableSource: {
+            table: regionDetails
+            column: region
+          }
         }
         {
           name: zipCode
@@ -74,49 +97,34 @@
           name: orderTime
           type: TIME
           // Physical Column Reference in same table
-          definition: '{{created_on}}'
+          definition: '{{$created_on}}'
           readAccess: guest user
-          grain:
-          {
-            type: SECOND
-            // sql: '{{}}' OR
-            sql: PARSEDATETIME(FORMATDATETIME({{}}, 'yyyy-MM-dd HH:mm:ss'), 'yyyy-MM-dd HH:mm:ss')
-          }
-        }
-        {
-          name: orderDate
-          type: TIME
-          // Logical Column Reference in same table, which references Physical column in same table
-          definition: '{{orderTime}}'
-          readAccess: guest user
-          grain:
-          {
-            type: DAY
-            sql: PARSEDATETIME(FORMATDATETIME({{}}, 'yyyy-MM-dd'), 'yyyy-MM-dd')
-          }
-        }
-        {
-          name: orderMonth
-          type: TIME
-          // Logical Column Reference in same table, which references another Logical column in same table, which references Physical column in same table
-          definition: '{{orderDate}}'
-          readAccess: guest user
-          grain:
-          {
-            type: MONTH
-            sql: PARSEDATETIME(FORMATDATETIME({{}}, 'yyyy-MM'), 'yyyy-MM')
-          }
+          grains:
+          [
+            {
+              type: MONTH
+              sql: PARSEDATETIME(FORMATDATETIME({{$$column.expr}}, 'yyyy-MM'), 'yyyy-MM')
+            },
+            {
+              type: SECOND
+              sql: PARSEDATETIME(FORMATDATETIME({{$$column.expr}}, 'yyyy-MM-dd HH:mm:ss'), 'yyyy-MM-dd HH:mm:ss')
+            },
+            {
+              type: DAY
+              sql: PARSEDATETIME(FORMATDATETIME({{$$column.expr}}, 'yyyy-MM-dd'), 'yyyy-MM-dd')
+            }
+          ]
         }
         {
           name: deliveryTime
           type: TIME
           // Physical Column Reference in referred table
-          definition: '{{delivery.delivered_on}}'
+          definition: '{{delivery.$delivered_on}}'
           readAccess: guest user
-          grain:
-          {
+          grains:
+          [{
             type: SECOND
-          }
+          }]
         }
         {
           name: deliveryDate
@@ -124,10 +132,10 @@
           // Logical Column Reference in referred table, which references Physical column in referred table
           definition: '{{delivery.time}}'
           readAccess: guest user
-          grain:
-          {
-            sql: PARSEDATETIME(FORMATDATETIME({{}}, 'yyyy-MM-dd'), 'yyyy-MM-dd')
-          }
+          grains:
+          [{
+            sql: PARSEDATETIME(FORMATDATETIME({{$$column.expr}}, 'yyyy-MM-dd'), 'yyyy-MM-dd')
+          }]
         }
         {
           name: deliveryMonth
@@ -135,11 +143,11 @@
           // Logical Column Reference in referred table, which references another Logical column in referred table, which references another Logical column in referred table, which references Physical column in referred table
           definition: '{{delivery.month}}'
           readAccess: guest user
-          grain:
-          {
+          grains:
+          [{
             type: MONTH
-            sql: PARSEDATETIME(FORMATDATETIME({{}}, 'yyyy-MM'), 'yyyy-MM')
-          }
+            sql: PARSEDATETIME(FORMATDATETIME({{$$column.expr}}, 'yyyy-MM'), 'yyyy-MM')
+          }]
         }
         {
           name: deliveryHour
@@ -147,11 +155,11 @@
           // Logical Column Reference in same table, which references Physical column in referred table
           definition: '{{deliveryTime}}'
           readAccess: guest user
-          grain:
-          {
+          grains:
+          [{
             type: HOUR
-            sql: PARSEDATETIME(FORMATDATETIME({{}}, 'yyyy-MM-dd HH'), 'yyyy-MM-dd HH')
-          }
+            sql: PARSEDATETIME(FORMATDATETIME({{$$column.expr}}, 'yyyy-MM-dd HH'), 'yyyy-MM-dd HH')
+          }]
         }
         {
           name: deliveryYear
@@ -159,11 +167,11 @@
           // Logical Column Reference in same table, which references another Logical Column in referred table, which references another Logical column in referred table, which references another Logical column in referred table, which references Physical column in referred table
           definition: '{{deliveryMonth}}'
           readAccess: guest user
-          grain:
-          {
+          grains:
+          [{
             type: YEAR
-            sql: PARSEDATETIME(FORMATDATETIME({{}}, 'yyyy'), 'yyyy')
-          }
+            sql: PARSEDATETIME(FORMATDATETIME({{$$column.expr}}, 'yyyy'), 'yyyy')
+          }]
         }
         {
           name: deliveryDefault
@@ -180,13 +188,14 @@
       dbConnectionName: SalesDBConnection
       cardinality: small
       readAccess: guest user
+      namespace: SalesNamespace
       joins:
       [
         {
           name: region
           to: regionDetails
           // References Physical & Logical Columns
-          definition: '{{zipCode}} = {{region.zip_code}}'
+          definition: '{{zipCode}} = {{region.$zip_code}}'
         }
       ]
       dimensions:
@@ -194,13 +203,13 @@
         {
           name: name
           type: TEXT
-          definition: '{{name}}'
+          definition: '{{$name}}'
           readAccess: guest user
         }
         {
           name: zipCode
           type: INTEGER
-          definition: '{{zip_code}}'
+          definition: '{{$zip_code}}'
           readAccess: guest user
         }
         {
@@ -217,53 +226,54 @@
       dbConnectionName: SalesDBConnection
       cardinality: large
       readAccess: guest user
+      namespace: SalesNamespace
       filterTemplate : month>={{start}};month<{{end}}
       dimensions:
       [
         {
           name: orderId
           type: TEXT
-          definition: '{{order_id}}'
+          definition: '{{$order_id}}'
           readAccess: guest user
         }
         {
           name: trackingNumber
           type: INTEGER
-          definition: '{{tracking_number}}'
+          definition: '{{$tracking_number}}'
           readAccess: operator
         }
         {
           name: time
           type: TIME
-          definition: '{{delivered_on}}'
+          definition: '{{$delivered_on}}'
           readAccess: guest user
-          grain:
-          {
+          grains:
+          [{
             type: SECOND
-            sql: '{{}}'
-          }
+            sql: '{{$$column.expr}}'
+          }]
         }
         {
           name: date
           type: TIME
           definition: '{{time}}'
           readAccess: guest user
-          grain:
-          {
+          grains:
+          [{
             type: DAY
-            sql: PARSEDATETIME(FORMATDATETIME({{}}, 'yyyy-MM-dd'), 'yyyy-MM-dd')
-          }
+            sql: PARSEDATETIME(FORMATDATETIME({{$$column.expr}}, 'yyyy-MM-dd'), 'yyyy-MM-dd')
+          }]
         }
         {
           name: month
           type: TIME
           definition: '{{date}}'
           readAccess: guest user
-          grain:
-          {
+          grains:
+          [{
             type: MONTH
-            sql: PARSEDATETIME(FORMATDATETIME({{}}, 'yyyy-MM'), 'yyyy-MM')
-          }
+            sql: PARSEDATETIME(FORMATDATETIME({{$$column.expr}}, 'yyyy-MM'), 'yyyy-MM')
+          }]
         }
       ]
     }

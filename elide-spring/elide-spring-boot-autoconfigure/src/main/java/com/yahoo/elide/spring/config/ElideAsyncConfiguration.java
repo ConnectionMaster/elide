@@ -9,15 +9,27 @@ import static com.yahoo.elide.annotation.LifeCycleHookBinding.Operation.CREATE;
 import static com.yahoo.elide.annotation.LifeCycleHookBinding.Operation.READ;
 import static com.yahoo.elide.annotation.LifeCycleHookBinding.TransactionPhase.POSTCOMMIT;
 import static com.yahoo.elide.annotation.LifeCycleHookBinding.TransactionPhase.PRESECURITY;
+
 import com.yahoo.elide.Elide;
+import com.yahoo.elide.async.export.formatter.CSVExportFormatter;
+import com.yahoo.elide.async.export.formatter.JSONExportFormatter;
+import com.yahoo.elide.async.export.formatter.TableExportFormatter;
 import com.yahoo.elide.async.hooks.AsyncQueryHook;
+import com.yahoo.elide.async.hooks.TableExportHook;
+import com.yahoo.elide.async.models.AsyncAPI;
 import com.yahoo.elide.async.models.AsyncQuery;
+import com.yahoo.elide.async.models.ResultType;
+import com.yahoo.elide.async.models.TableExport;
 import com.yahoo.elide.async.service.AsyncCleanerService;
 import com.yahoo.elide.async.service.AsyncExecutorService;
 import com.yahoo.elide.async.service.dao.AsyncAPIDAO;
 import com.yahoo.elide.async.service.dao.DefaultAsyncAPIDAO;
+import com.yahoo.elide.async.service.storageengine.FileResultStorageEngine;
 import com.yahoo.elide.async.service.storageengine.ResultStorageEngine;
 import com.yahoo.elide.core.dictionary.EntityDictionary;
+import com.yahoo.elide.core.exceptions.InvalidOperationException;
+import com.yahoo.elide.core.security.RequestScope;
+
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnExpression;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
@@ -26,6 +38,11 @@ import org.springframework.boot.autoconfigure.domain.EntityScan;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
+
+import java.util.HashMap;
+import java.util.Map;
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
 
 /**
  * Async Configuration For Elide Services.  Override any of the beans (by defining your own)
@@ -50,18 +67,63 @@ public class ElideAsyncConfiguration {
     public AsyncExecutorService buildAsyncExecutorService(Elide elide, ElideConfigProperties settings,
             AsyncAPIDAO asyncQueryDao, EntityDictionary dictionary,
             @Autowired(required = false) ResultStorageEngine resultStorageEngine) {
-        AsyncExecutorService.init(elide, settings.getAsync().getThreadPoolSize(),
-                asyncQueryDao, resultStorageEngine);
-        AsyncExecutorService asyncExecutorService = AsyncExecutorService.getInstance();
+        AsyncProperties asyncProperties = settings.getAsync();
+
+        ExecutorService executor = Executors.newFixedThreadPool(asyncProperties.getThreadPoolSize());
+        ExecutorService updater = Executors.newFixedThreadPool(asyncProperties.getThreadPoolSize());
+        AsyncExecutorService asyncExecutorService = new AsyncExecutorService(elide, executor, updater, asyncQueryDao);
 
         // Binding AsyncQuery LifeCycleHook
         AsyncQueryHook asyncQueryHook = new AsyncQueryHook(asyncExecutorService,
-                settings.getAsync().getMaxAsyncAfterSeconds());
+                asyncProperties.getMaxAsyncAfterSeconds());
         dictionary.bindTrigger(AsyncQuery.class, READ, PRESECURITY, asyncQueryHook, false);
         dictionary.bindTrigger(AsyncQuery.class, CREATE, POSTCOMMIT, asyncQueryHook, false);
         dictionary.bindTrigger(AsyncQuery.class, CREATE, PRESECURITY, asyncQueryHook, false);
 
-        return AsyncExecutorService.getInstance();
+        boolean exportEnabled = ElideAutoConfiguration.isExportEnabled(asyncProperties);
+
+        if (exportEnabled) {
+            // Initialize the Formatters.
+            boolean skipCSVHeader = asyncProperties.getExport() != null
+                    && asyncProperties.getExport().isSkipCSVHeader();
+            Map<ResultType, TableExportFormatter> supportedFormatters = new HashMap<>();
+            supportedFormatters.put(ResultType.CSV, new CSVExportFormatter(elide, skipCSVHeader));
+            supportedFormatters.put(ResultType.JSON, new JSONExportFormatter(elide));
+
+            // Binding TableExport LifeCycleHook
+            TableExportHook tableExportHook = getTableExportHook(asyncExecutorService, settings, supportedFormatters,
+                    resultStorageEngine);
+            dictionary.bindTrigger(TableExport.class, READ, PRESECURITY, tableExportHook, false);
+            dictionary.bindTrigger(TableExport.class, CREATE, POSTCOMMIT, tableExportHook, false);
+            dictionary.bindTrigger(TableExport.class, CREATE, PRESECURITY, tableExportHook, false);
+        }
+
+        return asyncExecutorService;
+    }
+
+    // TODO Remove this method when ElideSettings has all the settings.
+    // Then the check can be done in TableExportHook.
+    // Trying to avoid adding too many individual properties to ElideSettings for now.
+    // https://github.com/yahoo/elide/issues/1803
+    private TableExportHook getTableExportHook(AsyncExecutorService asyncExecutorService,
+            ElideConfigProperties settings, Map<ResultType, TableExportFormatter> supportedFormatters,
+            ResultStorageEngine resultStorageEngine) {
+        boolean exportEnabled = ElideAutoConfiguration.isExportEnabled(settings.getAsync());
+
+        TableExportHook tableExportHook = null;
+        if (exportEnabled) {
+            tableExportHook = new TableExportHook(asyncExecutorService, settings.getAsync().getMaxAsyncAfterSeconds(),
+                    supportedFormatters, resultStorageEngine);
+        } else {
+            tableExportHook = new TableExportHook(asyncExecutorService, settings.getAsync().getMaxAsyncAfterSeconds(),
+                    supportedFormatters, resultStorageEngine) {
+                @Override
+                public void validateOptions(AsyncAPI export, RequestScope requestScope) {
+                    throw new InvalidOperationException("TableExport is not supported.");
+                }
+            };
+        }
+        return tableExportHook;
     }
 
     /**
@@ -101,10 +163,11 @@ public class ElideAsyncConfiguration {
      */
     @Bean
     @ConditionalOnMissingBean
-    @ConditionalOnProperty(prefix = "elide.async.download", name = "enabled", matchIfMissing = false)
+    @ConditionalOnProperty(prefix = "elide.async.export", name = "enabled", matchIfMissing = false)
     public ResultStorageEngine buildResultStorageEngine(Elide elide, ElideConfigProperties settings,
             AsyncAPIDAO asyncQueryDAO) {
-        // TODO: Initialize with FileResultStorageEngine
-        return null;
+        FileResultStorageEngine resultStorageEngine = new FileResultStorageEngine(settings.getAsync().getExport()
+                .getStorageDestination());
+        return resultStorageEngine;
     }
 }

@@ -6,6 +6,7 @@
 package com.yahoo.elide.modelconfig;
 
 import com.yahoo.elide.modelconfig.model.ElideDBConfig;
+import com.yahoo.elide.modelconfig.model.ElideNamespaceConfig;
 import com.yahoo.elide.modelconfig.model.ElideSecurityConfig;
 import com.yahoo.elide.modelconfig.model.ElideTableConfig;
 import com.yahoo.elide.modelconfig.parser.handlebars.HandlebarsHydrator;
@@ -13,11 +14,11 @@ import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.MapperFeature;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import com.github.fge.jsonschema.core.exceptions.ProcessingException;
+import org.apache.commons.lang3.StringUtils;
 import org.hjson.JsonValue;
 import org.hjson.ParseException;
 import lombok.extern.slf4j.Slf4j;
 
-import java.io.File;
 import java.io.IOException;
 import java.util.HashMap;
 import java.util.Map;
@@ -32,9 +33,11 @@ public class DynamicConfigHelpers {
      * Checks whether input is null or empty.
      * @param input : input string
      * @return true or false
+     * @deprecated use {@link StringUtils#isBlank}
      */
+    @Deprecated
     public static boolean isNullOrEmpty(String input) {
-        return (input == null || input.trim().length() == 0);
+        return StringUtils.isBlank(input);
     }
 
     /**
@@ -43,19 +46,18 @@ public class DynamicConfigHelpers {
      * @return formatted file path.
      */
     public static String formatFilePath(String basePath) {
-        if (isNullOrEmpty(basePath) || basePath.endsWith(File.separator)) {
-            return basePath;
-        } else {
-            return basePath += File.separator;
+        if (StringUtils.isNotBlank(basePath) && !basePath.endsWith("/")) {
+            basePath += "/";
         }
+        return basePath;
     }
 
     /**
      * converts variables hjson string to map of variables.
-     * @param config
+     * @param config HJSON file content.
      * @param schemaValidator JSON schema validator.
      * @return Map of Variables
-     * @throws IOException
+     * @throws IOException If an I/O error or a processing error occurs.
      */
     @SuppressWarnings("unchecked")
     public static Map<String, Object> stringToVariablesPojo(String fileName, String config,
@@ -79,7 +81,7 @@ public class DynamicConfigHelpers {
      * @param variables : variables to resolve.
      * @param schemaValidator JSON schema validator.
      * @return ElideTableConfig Pojo
-     * @throws IOException
+     * @throws IOException If an I/O error or a processing error occurs.
      */
     public static ElideTableConfig stringToElideTablePojo(String fileName, String content,
                     Map<String, Object> variables, DynamicConfigSchemaValidator schemaValidator) throws IOException {
@@ -102,7 +104,7 @@ public class DynamicConfigHelpers {
      * @param variables : variables to resolve.
      * @param schemaValidator JSON schema validator.
      * @return ElideDBConfig Pojo
-     * @throws IOException
+     * @throws IOException If an I/O error or a processing error occurs.
      */
     public static ElideDBConfig stringToElideDBConfigPojo(String fileName, String content,
                     Map<String, Object> variables, DynamicConfigSchemaValidator schemaValidator) throws IOException {
@@ -120,12 +122,35 @@ public class DynamicConfigHelpers {
     }
 
     /**
+     * Generates ElideNamespaceConfig Pojo from input String.
+     * @param content : input string
+     * @param variables : variables to resolve.
+     * @param schemaValidator JSON schema validator.
+     * @return ElideNamespaceConfig Pojo
+     * @throws IOException If an I/O error or a processing error occurs.
+     */
+    public static ElideNamespaceConfig stringToElideNamespaceConfigPojo(String fileName, String content,
+                    Map<String, Object> variables, DynamicConfigSchemaValidator schemaValidator) throws IOException {
+        ElideNamespaceConfig namespaceconfig = new ElideNamespaceConfig();
+        String jsonConfig = hjsonToJson(resolveVariables(content, variables));
+        try {
+            if (schemaValidator.verifySchema(Config.NAMESPACEConfig, jsonConfig, fileName)) {
+                namespaceconfig = getModelPojo(jsonConfig, ElideNamespaceConfig.class);
+            }
+        } catch (ProcessingException e) {
+            log.error("Error Validating DB config : " + e.getMessage());
+            throw new IOException(e);
+        }
+        return namespaceconfig;
+    }
+
+    /**
      * Generates ElideSecurityConfig Pojo from input String.
      * @param content : input string
      * @param variables : variables to resolve.
      * @param schemaValidator JSON schema validator.
      * @return ElideSecurityConfig Pojo
-     * @throws IOException
+     * @throws IOException If an I/O error or a processing error occurs.
      */
     public static ElideSecurityConfig stringToElideSecurityPojo(String fileName, String content,
                     Map<String, Object> variables, DynamicConfigSchemaValidator schemaValidator) throws IOException {
@@ -146,10 +171,10 @@ public class DynamicConfigHelpers {
      * @param jsonConfig of table or security
      * @param variables map from config
      * @return json string with resolved variables
-     * @throws IOException
+     * @throws IOException If an I/O error or a processing error occurs.
      */
     public static String resolveVariables(String jsonConfig, Map<String, Object> variables) throws IOException {
-        HandlebarsHydrator hydrator = new HandlebarsHydrator(new StaticModelsDetails());
+        HandlebarsHydrator hydrator = new HandlebarsHydrator();
         return hydrator.hydrateConfigTemplate(jsonConfig, variables);
     }
 

@@ -10,6 +10,7 @@ import static org.junit.jupiter.api.Assertions.assertNull;
 import static org.junit.jupiter.api.Assertions.assertThrows;
 import com.yahoo.elide.core.exceptions.InvalidValueException;
 import com.yahoo.elide.core.utils.coerce.converters.EpochToDateConverter;
+import com.yahoo.elide.core.utils.coerce.converters.ISO8601DateSerde;
 import com.yahoo.elide.core.utils.coerce.converters.Serde;
 import org.junit.jupiter.api.AfterAll;
 import org.junit.jupiter.api.BeforeAll;
@@ -24,6 +25,7 @@ import java.util.Date;
 import java.util.HashMap;
 import java.util.LinkedHashMap;
 import java.util.Map;
+import java.util.TimeZone;
 import java.util.UUID;
 
 public class CoerceUtilTest {
@@ -49,9 +51,7 @@ public class CoerceUtilTest {
 
     @AfterAll
     public static void shutdown() {
-        oldSerdes.forEach((dateClass, serde) -> {
-            CoerceUtil.register(dateClass, serde);
-        });
+        oldSerdes.forEach(CoerceUtil::register);
     }
 
     @EqualsAndHashCode
@@ -68,7 +68,7 @@ public class CoerceUtilTest {
         assertEquals(1, CoerceUtil.coerce(1, (Class<Object>) null),
                      "coerce returns value if target class null");
 
-        assertEquals(null, CoerceUtil.coerce(null, Object.class),
+        assertNull(CoerceUtil.coerce(null, Object.class),
                      "coerce returns value if value is null");
 
         assertEquals(1, (Object) CoerceUtil.coerce(1, int.class),
@@ -190,6 +190,22 @@ public class CoerceUtilTest {
 
         Time time = CoerceUtil.coerce(0, Time.class);
         assertEquals(new Time(0), time);
+    }
+
+    @Test
+    public void testDateToTimestamp() {
+        String dateFormat = "yyyy-MM-dd'T'HH:mm:ss'Z'";
+        TimeZone tz = TimeZone.getTimeZone("UTC");
+        Serde oldDateSerde = CoerceUtil.lookup(Date.class);
+        Serde oldTimestampSerde = CoerceUtil.lookup(java.sql.Timestamp.class);
+        Serde timestampSerde = new ISO8601DateSerde(dateFormat, tz, java.sql.Timestamp.class);
+        CoerceUtil.register(Date.class, new ISO8601DateSerde(dateFormat, tz));
+        CoerceUtil.register(java.sql.Timestamp.class, timestampSerde);
+        Date date = new Date();
+        Timestamp timestamp = CoerceUtil.coerce(date, Timestamp.class);
+        assertEquals(date.getTime(), timestamp.getTime());
+        CoerceUtil.register(Date.class, oldDateSerde);
+        CoerceUtil.register(java.sql.Timestamp.class, oldTimestampSerde);
     }
 
     /**

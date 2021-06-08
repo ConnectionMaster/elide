@@ -5,6 +5,7 @@
  */
 package com.yahoo.elide.core.security;
 
+import static com.yahoo.elide.core.PersistentResource.ALL_FIELDS;
 import static com.yahoo.elide.core.dictionary.EntityDictionary.NO_VERSION;
 import static org.junit.jupiter.api.Assertions.assertEquals;
 import static org.junit.jupiter.api.Assertions.assertThrows;
@@ -33,18 +34,24 @@ import javax.persistence.Id;
 
 public class PermissionExecutorTest {
 
+    interface SampleOperationModel {
+        default boolean test() {
+            return true;
+        }
+    }
+
     @Test
     public void testSuccessfulOperationCheck() throws Exception {
         @Entity
         @Include(rootLevel = false)
         @UpdatePermission(expression = "sampleOperation")
-        class Model { }
+        class Model implements SampleOperationModel {
+        }
 
         PersistentResource resource = newResource(new Model(), Model.class, false);
         RequestScope requestScope = resource.getRequestScope();
-        ChangeSpec cspec = new ChangeSpec(null, null, null, null);
         assertEquals(ExpressionResult.PASS,
-                requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, cspec));
+                requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, ALL_FIELDS));
 
         requestScope.getPermissionExecutor().executeCommitChecks();
     }
@@ -54,7 +61,7 @@ public class PermissionExecutorTest {
         @Entity
         @Include(rootLevel = false)
         @UpdatePermission(expression = "sampleOperation AND Prefab.Role.None")
-        class Model { }
+        class Model implements SampleOperationModel { }
 
         PersistentResource resource = newResource(new Model(), Model.class, false);
         RequestScope requestScope = resource.getRequestScope();
@@ -68,7 +75,13 @@ public class PermissionExecutorTest {
         @Entity
         @Include(rootLevel = false)
         @UpdatePermission(expression = "sampleOperation")
-        class Model { }
+        class Model implements SampleOperationModel {
+
+            @Override
+            public boolean test() {
+                return false;
+            }
+        }
 
         PersistentResource resource = newResource(new Model(), Model.class, true);
         RequestScope requestScope = resource.getRequestScope();
@@ -85,25 +98,65 @@ public class PermissionExecutorTest {
         @Entity
         @Include(rootLevel = false)
         @UpdatePermission(expression = "sampleOperation")
-        class Model { }
+        class Model implements SampleOperationModel { }
 
         PersistentResource resource = newResource(new Model(), Model.class, true);
         RequestScope requestScope = resource.getRequestScope();
-        ChangeSpec cspec = new ChangeSpec(null, null, null, null);
 
         // Because the object is newly created, the check is DEFERRED.
         assertEquals(ExpressionResult.DEFERRED,
-                requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, cspec));
+                requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, ALL_FIELDS));
 
         requestScope.getPermissionExecutor().executeCommitChecks();
     }
 
     @Test
+    public void testSuccessfulRunAtCommitCheck() throws Exception {
+        @Entity
+        @Include(rootLevel = false)
+        @UpdatePermission(expression = "sampleCommit")
+        class Model implements SampleOperationModel { }
+
+        PersistentResource resource = newResource(new Model(), Model.class, false);
+        RequestScope requestScope = resource.getRequestScope();
+
+        // Because the check is runAtCommit, the check is DEFERRED.
+        assertEquals(ExpressionResult.DEFERRED,
+                requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, ALL_FIELDS));
+
+        requestScope.getPermissionExecutor().executeCommitChecks();
+    }
+
+    @Test
+    public void testFailRunAtCommitCheck() throws Exception {
+        @Entity
+        @Include(rootLevel = false)
+        @UpdatePermission(expression = "sampleCommit")
+        class Model implements SampleOperationModel {
+            @Override
+            public boolean test() {
+                return false;
+            }
+        }
+
+        PersistentResource resource = newResource(new Model(), Model.class, false);
+        RequestScope requestScope = resource.getRequestScope();
+
+        // Because the check is runAtCommit, the check is DEFERRED.
+        assertEquals(ExpressionResult.DEFERRED,
+                requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource));
+
+        assertThrows(ForbiddenAccessException.class, () -> requestScope.getPermissionExecutor().executeCommitChecks());
+    }
+
+    @Test
     public void testReadFieldAwareSuccessAllAnyField() {
-        PersistentResource resource = newResource(SampleBean.class, false);
+        SampleBean sampleBean = new SampleBean();
+        sampleBean.id = 1L;
+        PersistentResource resource = newResource(sampleBean, SampleBean.class, false);
         RequestScope requestScope = resource.getRequestScope();
         assertEquals(ExpressionResult.PASS,
-                requestScope.getPermissionExecutor().checkPermission(ReadPermission.class, resource, new ChangeSpec(null, null, null, null)));
+                requestScope.getPermissionExecutor().checkPermission(ReadPermission.class, resource, ALL_FIELDS));
         requestScope.getPermissionExecutor().executeCommitChecks();
     }
 
@@ -119,7 +172,9 @@ public class PermissionExecutorTest {
 
     @Test
     public void testReadFieldAwareSuccessAll() {
-        PersistentResource resource = newResource(SampleBean.class, false);
+        SampleBean sampleBean = new SampleBean();
+        sampleBean.id = 1L;
+        PersistentResource resource = newResource(sampleBean, SampleBean.class, false);
         RequestScope requestScope = resource.getRequestScope();
         assertEquals(ExpressionResult.PASS,
                 requestScope.getPermissionExecutor().checkSpecificFieldPermissions(resource, new ChangeSpec(null, null, null, null), ReadPermission.class, "allVisible"));
@@ -161,7 +216,9 @@ public class PermissionExecutorTest {
 
     @Test
     public void testReadFieldAwareSuccessAny() {
-        PersistentResource resource = newResource(SampleBean.class, false);
+        SampleBean sampleBean = new SampleBean();
+        sampleBean.id = 1L;
+        PersistentResource resource = newResource(sampleBean, SampleBean.class, false);
         RequestScope requestScope = resource.getRequestScope();
         assertEquals(ExpressionResult.PASS,
                 requestScope.getPermissionExecutor().checkSpecificFieldPermissions(resource, new ChangeSpec(null, null, null, null), ReadPermission.class, "mayFailInCommit"));
@@ -181,7 +238,9 @@ public class PermissionExecutorTest {
 
     @Test
     public void testUpdateFieldAwareSuccessAll() {
-        PersistentResource resource = newResource(SampleBean.class, true);
+        SampleBean sampleBean = new SampleBean();
+        sampleBean.id = 1L;
+        PersistentResource resource = newResource(sampleBean, SampleBean.class, true);
         RequestScope requestScope = resource.getRequestScope();
         assertEquals(ExpressionResult.DEFERRED,
                 requestScope.getPermissionExecutor().checkSpecificFieldPermissions(resource, new ChangeSpec(null, null, null, null), UpdatePermission.class, "allVisible"));
@@ -198,7 +257,9 @@ public class PermissionExecutorTest {
 
     @Test
     public void testUpdateFieldAwareSuccessAny() {
-        PersistentResource resource = newResource(SampleBean.class, true);
+        SampleBean sampleBean = new SampleBean();
+        sampleBean.id = 1L;
+        PersistentResource resource = newResource(sampleBean, SampleBean.class, true);
         RequestScope requestScope = resource.getRequestScope();
         assertEquals(ExpressionResult.DEFERRED,
                 requestScope.getPermissionExecutor().checkSpecificFieldPermissions(resource, new ChangeSpec(null, null, null, null), UpdatePermission.class, "mayFailInCommit"));
@@ -215,7 +276,9 @@ public class PermissionExecutorTest {
 
     @Test
     public void testReadFieldAwareEntireOpenBean() {
-        PersistentResource resource = newResource(OpenBean.class, false);
+        OpenBean openBean = new OpenBean();
+        openBean.id = 1L;
+        PersistentResource resource = newResource(openBean, OpenBean.class, false);
         RequestScope requestScope = resource.getRequestScope();
         assertEquals(ExpressionResult.PASS, requestScope.getPermissionExecutor().checkPermission(ReadPermission.class, resource));
         assertEquals(ExpressionResult.PASS, requestScope.getPermissionExecutor().checkSpecificFieldPermissions(resource, null, ReadPermission.class, "open"));
@@ -262,7 +325,7 @@ public class PermissionExecutorTest {
             @Id
             public Long id;
 
-            @UpdatePermission(expression = "allow all AND FailOp")
+            @UpdatePermission(expression = "Prefab.Role.All AND FailOp")
             public String field = "some data";
         }
 
@@ -297,12 +360,12 @@ public class PermissionExecutorTest {
     public void testFailAllSpecificFieldAwareSuccessOperationFailCommit() {
         @Entity
         @Include(rootLevel = false)
-        @UpdatePermission(expression = "allow all")
+        @UpdatePermission(expression = "Prefab.Role.All")
         class Model {
             @Id
             public Long id;
 
-            @UpdatePermission(expression = "allow all AND FailOp")
+            @UpdatePermission(expression = "Prefab.Role.All AND FailOp")
             public String field = "some data";
         }
 
@@ -390,32 +453,32 @@ public class PermissionExecutorTest {
     public void testNoCache() {
         PersistentResource resource = newResource(AnnotationOnlyRecord.class, false);
         RequestScope requestScope = resource.getRequestScope();
-        ChangeSpec cspec = new ChangeSpec(null, null, null, null);
         assertThrows(
                 ForbiddenAccessException.class,
-                () -> requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, cspec));
+                () -> requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, ALL_FIELDS));
         assertThrows(
                 ForbiddenAccessException.class,
-                () -> requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, cspec));
+                () -> requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, ALL_FIELDS));
     }
 
     @Test
     public void testUserCheckCache() {
         PersistentResource resource = newResource(UserCheckCacheRecord.class, false);
         RequestScope requestScope = resource.getRequestScope();
-        ChangeSpec cspec = new ChangeSpec(null, null, null, null);
         // This should cache for updates, reads, etc.
-        assertEquals(ExpressionResult.PASS, requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, cspec));
-        assertEquals(ExpressionResult.PASS, requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, cspec));
-        assertEquals(ExpressionResult.PASS, requestScope.getPermissionExecutor().checkPermission(ReadPermission.class, resource, cspec));
-        assertEquals(ExpressionResult.PASS, requestScope.getPermissionExecutor().checkPermission(ReadPermission.class, resource, cspec));
+        assertEquals(ExpressionResult.PASS, requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, ALL_FIELDS));
+        assertEquals(ExpressionResult.PASS, requestScope.getPermissionExecutor().checkPermission(UpdatePermission.class, resource, ALL_FIELDS));
+        assertEquals(ExpressionResult.PASS, requestScope.getPermissionExecutor().checkPermission(ReadPermission.class, resource, ALL_FIELDS));
+        assertEquals(ExpressionResult.PASS, requestScope.getPermissionExecutor().checkPermission(ReadPermission.class, resource, ALL_FIELDS));
     }
 
     @Test
     public void testUserCheckOnFieldSuccess() {
+        OpenBean openBean = new OpenBean();
+        openBean.id = 1L;
         PersistentResource resource = newResource(OpenBean.class, false);
         RequestScope requestScope = resource.getRequestScope();
-        ExpressionResult result = requestScope.getPermissionExecutor().checkUserPermissions(new ClassType(OpenBean.class),
+        ExpressionResult result = requestScope.getPermissionExecutor().checkUserPermissions(ClassType.of(OpenBean.class),
                 ReadPermission.class,
                 "open");
 
@@ -428,7 +491,7 @@ public class PermissionExecutorTest {
         RequestScope requestScope = resource.getRequestScope();
         assertThrows(
                 ForbiddenAccessException.class,
-                () -> requestScope.getPermissionExecutor().checkUserPermissions(new ClassType(SampleBean.class),
+                () -> requestScope.getPermissionExecutor().checkUserPermissions(ClassType.of(SampleBean.class),
                 ReadPermission.class,
                 "cannotSeeMe"));
     }
@@ -438,7 +501,7 @@ public class PermissionExecutorTest {
         PersistentResource resource = newResource(SampleBean.class, false);
         RequestScope requestScope = resource.getRequestScope();
 
-        ExpressionResult result = requestScope.getPermissionExecutor().checkUserPermissions(new ClassType(SampleBean.class),
+        ExpressionResult result = requestScope.getPermissionExecutor().checkUserPermissions(ClassType.of(SampleBean.class),
                 ReadPermission.class,
                 "allVisible");
 
@@ -471,10 +534,10 @@ public class PermissionExecutorTest {
                     .build();
     }
 
-    public static final class SampleOperationCheck extends OperationCheck<Object> {
+    public static final class SampleOperationCheck extends OperationCheck<SampleOperationModel> {
         @Override
-        public boolean ok(Object object, com.yahoo.elide.core.security.RequestScope requestScope, Optional<ChangeSpec> changeSpec) {
-            return changeSpec.isPresent();
+        public boolean ok(SampleOperationModel model, com.yahoo.elide.core.security.RequestScope requestScope, Optional<ChangeSpec> changeSpec) {
+            return model.test();
         }
     }
 
@@ -486,22 +549,40 @@ public class PermissionExecutorTest {
         }
     }
 
+    public static final class SampleCommitCheck extends OperationCheck<SampleOperationModel> {
+        @Override
+        public boolean runAtCommit() {
+            return true;
+        }
+
+        @Override
+        public boolean ok(SampleOperationModel model, com.yahoo.elide.core.security.RequestScope requestScope,
+                Optional<ChangeSpec> changeSpec) {
+            return model.test();
+        }
+    }
+
     @ReadPermission(expression = "Prefab.Role.None")
     @UpdatePermission(expression = "Prefab.Role.None")
     @Include(rootLevel = false)
     @Entity
-    public static final class SampleBean {
+    public static final class SampleBean implements SampleOperationModel {
         @Id
         public Long id;
 
-        @ReadPermission(expression = "allow all AND sampleOperation")
-        @UpdatePermission(expression = "allow all AND sampleOperation")
+        @Override
+        public boolean test() {
+            return id != null && id == 1L;
+        }
+
+        @ReadPermission(expression = "Prefab.Role.All AND sampleOperation")
+        @UpdatePermission(expression = "Prefab.Role.All AND sampleOperation")
         public String allVisible = "You should see me!";
 
         public String defaultHidden = "I'm invisible. muwahaha...";
 
-        @ReadPermission(expression = "allow all AND Prefab.Role.None")
-        @UpdatePermission(expression = "allow all AND Prefab.Role.None")
+        @ReadPermission(expression = "Prefab.Role.All AND Prefab.Role.None")
+        @UpdatePermission(expression = "Prefab.Role.All AND Prefab.Role.None")
         public String cannotSeeMe = "hidden";
 
         @ReadPermission(expression = "sampleOperation")
@@ -509,18 +590,23 @@ public class PermissionExecutorTest {
         public String mayFailInCommit = "aw :(";
     }
 
-    @ReadPermission(expression = "allow all")
-    @UpdatePermission(expression = "allow all")
+    @ReadPermission(expression = "Prefab.Role.All")
+    @UpdatePermission(expression = "Prefab.Role.All")
     @Include(rootLevel = false)
     @Entity
-    public static final class OpenBean {
+    public static final class OpenBean implements SampleOperationModel {
         @Id
         public Long id;
 
         public String open;
 
-        @ReadPermission(expression = "allow all AND sampleOperation")
-        @UpdatePermission(expression = "allow all AND sampleOperation")
+        @Override
+        public boolean test() {
+            return id != null && id == 1L;
+        }
+
+        @ReadPermission(expression = "Prefab.Role.All AND sampleOperation")
+        @UpdatePermission(expression = "Prefab.Role.All AND sampleOperation")
         public String openAll = "all";
 
         @ReadPermission(expression = "Prefab.Role.None OR sampleOperation")

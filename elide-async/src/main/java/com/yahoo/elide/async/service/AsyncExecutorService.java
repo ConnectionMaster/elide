@@ -9,9 +9,8 @@ import com.yahoo.elide.Elide;
 import com.yahoo.elide.async.models.AsyncAPI;
 import com.yahoo.elide.async.models.AsyncAPIResult;
 import com.yahoo.elide.async.models.QueryStatus;
+import com.yahoo.elide.async.operation.AsyncAPIUpdateOperation;
 import com.yahoo.elide.async.service.dao.AsyncAPIDAO;
-import com.yahoo.elide.async.service.storageengine.ResultStorageEngine;
-import com.yahoo.elide.async.service.thread.AsyncAPIUpdateThread;
 import com.yahoo.elide.core.security.User;
 import com.yahoo.elide.graphql.QueryRunner;
 import lombok.Data;
@@ -24,7 +23,6 @@ import java.util.Map;
 import java.util.concurrent.Callable;
 import java.util.concurrent.ExecutionException;
 import java.util.concurrent.ExecutorService;
-import java.util.concurrent.Executors;
 import java.util.concurrent.Future;
 import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
@@ -40,65 +38,37 @@ import javax.inject.Inject;
 @Slf4j
 public class AsyncExecutorService {
 
-    private final int defaultThreadpoolSize = 6;
+    public static final int DEFAULT_THREAD_POOL_SIZE = 6;
 
     private Elide elide;
     private Map<String, QueryRunner> runners;
     private ExecutorService executor;
     private ExecutorService updater;
     private AsyncAPIDAO asyncAPIDao;
-    private static AsyncExecutorService asyncExecutorService = null;
-    private ResultStorageEngine resultStorageEngine;
     private ThreadLocal<AsyncAPIResultFuture> asyncResultFutureThreadLocal = new ThreadLocal<>();
 
     /**
      * A Future with Synchronous Execution Complete Flag.
      */
     @Data
-    private class AsyncAPIResultFuture {
+    private static class AsyncAPIResultFuture {
         private Future<AsyncAPIResult> asyncFuture;
         private boolean synchronousTimeout = false;
     }
 
     @Inject
-    private AsyncExecutorService(Elide elide, Integer threadPoolSize, AsyncAPIDAO asyncAPIDao,
-            ResultStorageEngine resultStorageEngine) {
+    public AsyncExecutorService(Elide elide, ExecutorService executor, ExecutorService updater,
+                    AsyncAPIDAO asyncAPIDao) {
         this.elide = elide;
-        runners = new HashMap();
+        runners = new HashMap<>();
 
         for (String apiVersion : elide.getElideSettings().getDictionary().getApiVersions()) {
             runners.put(apiVersion, new QueryRunner(elide, apiVersion));
         }
 
-        executor = Executors.newFixedThreadPool(threadPoolSize == null ? defaultThreadpoolSize : threadPoolSize);
-        updater = Executors.newFixedThreadPool(threadPoolSize == null ? defaultThreadpoolSize : threadPoolSize);
+        this.executor = executor;
+        this.updater = updater;
         this.asyncAPIDao = asyncAPIDao;
-        this.resultStorageEngine = resultStorageEngine;
-    }
-
-    /**
-     * Initialize the singleton AsyncExecutorService object.
-     * If already initialized earlier, no new object is created.
-     * @param elide Elide Instance
-     * @param threadPoolSize thread pool size
-     * @param asyncAPIDao DAO Object
-     */
-    public static void init(Elide elide, Integer threadPoolSize, AsyncAPIDAO asyncAPIDao,
-            ResultStorageEngine resultStorageEngine) {
-        if (asyncExecutorService == null) {
-            asyncExecutorService = new AsyncExecutorService(elide, threadPoolSize, asyncAPIDao,
-                    resultStorageEngine);
-        } else {
-            log.debug("asyncExecutorService is already initialized.");
-        }
-    }
-
-    /**
-     * Get instance of AsyncExecutorService.
-     * @return AsyncExecutorService Object
-     */
-    public synchronized static AsyncExecutorService getInstance() {
-        return asyncExecutorService;
     }
 
     /**
@@ -117,16 +87,17 @@ public class AsyncExecutorService {
             queryObj.setStatus(QueryStatus.COMPLETE);
             queryObj.setUpdatedOn(new Date());
         } catch (InterruptedException e) {
-            log.error("InterruptedException: {}", e);
+            Thread.currentThread().interrupt();
+            log.error("InterruptedException: {}", e.toString());
             queryObj.setStatus(QueryStatus.FAILURE);
         } catch (ExecutionException e) {
-            log.error("ExecutionException: {}", e);
+            log.error("ExecutionException: {}", e.toString());
             queryObj.setStatus(QueryStatus.FAILURE);
         } catch (TimeoutException e) {
-            log.error("TimeoutException: {}", e);
+            log.error("TimeoutException: {}", e.toString());
             resultFuture.setSynchronousTimeout(true);
         } catch (Exception e) {
-            log.error("Exception: {}", e);
+            log.error("Exception: {}", e.toString());
             queryObj.setStatus(QueryStatus.FAILURE);
         } finally {
             asyncResultFutureThreadLocal.set(resultFuture);
@@ -143,7 +114,7 @@ public class AsyncExecutorService {
         AsyncAPIResultFuture asyncAPIResultFuture = asyncResultFutureThreadLocal.get();
         if (asyncAPIResultFuture.isSynchronousTimeout()) {
             log.debug("Task has not completed");
-            updater.execute(new AsyncAPIUpdateThread(elide, asyncAPIResultFuture.getAsyncFuture(), query,
+            updater.execute(new AsyncAPIUpdateOperation(elide, asyncAPIResultFuture.getAsyncFuture(), query,
                     asyncAPIDao));
             asyncResultFutureThreadLocal.remove();
         } else {

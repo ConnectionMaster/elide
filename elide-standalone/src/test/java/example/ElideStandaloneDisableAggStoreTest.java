@@ -17,15 +17,10 @@ import static io.restassured.RestAssured.when;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import com.yahoo.elide.standalone.ElideStandalone;
 import com.yahoo.elide.standalone.config.ElideStandaloneAnalyticSettings;
-import com.yahoo.elide.standalone.config.ElideStandaloneAsyncSettings;
-import com.yahoo.elide.standalone.config.ElideStandaloneSettings;
-import example.models.Post;
 import org.apache.http.HttpStatus;
 import org.junit.jupiter.api.BeforeAll;
 import org.junit.jupiter.api.Test;
 import org.junit.jupiter.api.TestInstance;
-
-import java.util.Properties;
 
 /**
  * Tests ElideStandalone starts and works.
@@ -33,77 +28,10 @@ import java.util.Properties;
 @TestInstance(TestInstance.Lifecycle.PER_CLASS)
 public class ElideStandaloneDisableAggStoreTest extends ElideStandaloneTest {
 
+    @Override
     @BeforeAll
     public void init() throws Exception {
-        elide = new ElideStandalone(new ElideStandaloneSettings() {
-
-            @Override
-            public Properties getDatabaseProperties() {
-                Properties options = new Properties();
-
-                options.put("hibernate.show_sql", "true");
-                options.put("hibernate.hbm2ddl.auto", "create");
-                options.put("hibernate.dialect", "org.hibernate.dialect.H2Dialect");
-                options.put("hibernate.current_session_context_class", "thread");
-                options.put("hibernate.jdbc.use_scrollable_resultset", "true");
-
-                options.put("javax.persistence.jdbc.driver", "org.h2.Driver");
-                options.put("javax.persistence.jdbc.url", "jdbc:h2:mem:db1;DB_CLOSE_DELAY=-1;");
-                options.put("javax.persistence.jdbc.user", "sa");
-                options.put("javax.persistence.jdbc.password", "");
-                return options;
-            }
-
-            @Override
-            public String getModelPackageName() {
-                return Post.class.getPackage().getName();
-            }
-
-            @Override
-            public boolean enableSwagger() {
-                return true;
-            }
-
-            @Override
-            public boolean enableGraphQL() {
-                return true;
-            }
-
-            @Override
-            public boolean enableJSONAPI() {
-                return true;
-            }
-
-            @Override
-            public ElideStandaloneAsyncSettings getAsyncProperties() {
-                ElideStandaloneAsyncSettings asyncPropeties = new ElideStandaloneAsyncSettings() {
-                    @Override
-                    public boolean enabled() {
-                        return true;
-                    }
-
-                    @Override
-                    public boolean enableCleanup() {
-                        return true;
-                    }
-
-                    @Override
-                    public Integer getThreadSize() {
-                        return 5;
-                    }
-
-                    @Override
-                    public Integer getMaxRunTimeSeconds() {
-                        return 1800;
-                    }
-
-                    @Override
-                    public Integer getQueryCleanupDays() {
-                        return 3;
-                    }
-                };
-                return asyncPropeties;
-            }
+        elide = new ElideStandalone(new ElideStandaloneTestSettings() {
 
             @Override
             public ElideStandaloneAnalyticSettings getAnalyticProperties() {
@@ -133,33 +61,42 @@ public class ElideStandaloneDisableAggStoreTest extends ElideStandaloneTest {
     @Test
     public void swaggerDocumentTest() {
         when()
-        .get("/swagger/doc/test")
-         .then()
-         .statusCode(200)
-         .body("tags.name", containsInAnyOrder("post", "asyncQuery", "tableExport"));
+                .get("/swagger/doc/test")
+                .then()
+                .statusCode(200)
+                .body("tags.name", containsInAnyOrder("post", "asyncQuery"));
     }
 
     @Override
     @Test
     public void testJsonAPIPost() {
         given()
-        .contentType(JSONAPI_CONTENT_TYPE)
-        .accept(JSONAPI_CONTENT_TYPE)
-        .body(
-            datum(
-                resource(
-                    type("post"),
-                    id("1"),
-                    attributes(
-                        attr("content", "This is my first post. woot."),
-                        attr("date", "2019-01-01T00:00Z")
+                .contentType(JSONAPI_CONTENT_TYPE)
+                .accept(JSONAPI_CONTENT_TYPE)
+                .body(
+                    datum(
+                        resource(
+                            type("post"),
+                            id("1"),
+                            attributes(
+                                attr("content", "This is my first post. woot."),
+                                attr("date", "2019-01-01T00:00Z")
+                            )
+                        )
                     )
                 )
-            )
-        )
-        .post("/api/v1/post")
-        .then()
-        .statusCode(HttpStatus.SC_CREATED)
-        .extract().body().asString();
+                .post("/api/v1/post")
+                .then()
+                .statusCode(HttpStatus.SC_CREATED);
+    }
+
+    @Override
+    @Test
+    public void metaDataTest() {
+        given()
+                .accept("application/vnd.api+json")
+                .get("/api/v1/namespace/default") //"default" namespace added by Agg Store.
+                .then()
+                .statusCode(HttpStatus.SC_NOT_FOUND); // Metadatastore is disabled, so not found.
     }
 }

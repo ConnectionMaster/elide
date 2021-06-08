@@ -6,10 +6,12 @@
 package com.yahoo.elide.datastores.aggregation.framework;
 
 import static com.yahoo.elide.core.dictionary.EntityDictionary.NO_VERSION;
+import static com.yahoo.elide.core.type.ClassType.STRING_TYPE;
 import static com.yahoo.elide.core.utils.TypeHelper.getClassType;
 import static org.junit.jupiter.api.Assertions.assertDoesNotThrow;
 import static org.junit.jupiter.api.Assertions.assertEquals;
-import static org.junit.jupiter.api.Assertions.fail;
+import static org.junit.jupiter.api.Assertions.assertNotNull;
+import com.yahoo.elide.annotation.Include;
 import com.yahoo.elide.core.Path;
 import com.yahoo.elide.core.dictionary.EntityDictionary;
 import com.yahoo.elide.core.filter.Operator;
@@ -19,27 +21,33 @@ import com.yahoo.elide.core.filter.expression.AndFilterExpression;
 import com.yahoo.elide.core.filter.expression.FilterExpression;
 import com.yahoo.elide.core.filter.expression.OrFilterExpression;
 import com.yahoo.elide.core.filter.predicates.FilterPredicate;
+import com.yahoo.elide.core.request.Argument;
+import com.yahoo.elide.core.request.Attribute;
 import com.yahoo.elide.core.request.Sorting;
 import com.yahoo.elide.core.sort.SortingImpl;
+import com.yahoo.elide.core.type.ClassType;
 import com.yahoo.elide.core.type.Type;
 import com.yahoo.elide.core.utils.ClassScanner;
 import com.yahoo.elide.core.utils.coerce.CoerceUtil;
+import com.yahoo.elide.datastores.aggregation.DefaultQueryValidator;
 import com.yahoo.elide.datastores.aggregation.QueryEngine;
-import com.yahoo.elide.datastores.aggregation.example.Continent;
-import com.yahoo.elide.datastores.aggregation.example.Country;
-import com.yahoo.elide.datastores.aggregation.example.CountryView;
-import com.yahoo.elide.datastores.aggregation.example.CountryViewNested;
+import com.yahoo.elide.datastores.aggregation.example.GameRevenue;
 import com.yahoo.elide.datastores.aggregation.example.Player;
 import com.yahoo.elide.datastores.aggregation.example.PlayerStats;
 import com.yahoo.elide.datastores.aggregation.example.PlayerStatsView;
 import com.yahoo.elide.datastores.aggregation.example.PlayerStatsWithView;
-import com.yahoo.elide.datastores.aggregation.example.SubCountry;
+import com.yahoo.elide.datastores.aggregation.example.dimensions.Continent;
+import com.yahoo.elide.datastores.aggregation.example.dimensions.Country;
+import com.yahoo.elide.datastores.aggregation.example.dimensions.CountryView;
+import com.yahoo.elide.datastores.aggregation.example.dimensions.CountryViewNested;
+import com.yahoo.elide.datastores.aggregation.example.dimensions.SubCountry;
 import com.yahoo.elide.datastores.aggregation.metadata.MetaDataStore;
 import com.yahoo.elide.datastores.aggregation.metadata.enums.TimeGrain;
-import com.yahoo.elide.datastores.aggregation.metadata.models.TimeDimension;
+import com.yahoo.elide.datastores.aggregation.query.DimensionProjection;
 import com.yahoo.elide.datastores.aggregation.query.ImmutablePagination;
+import com.yahoo.elide.datastores.aggregation.query.MetricProjection;
+import com.yahoo.elide.datastores.aggregation.query.Optimizer;
 import com.yahoo.elide.datastores.aggregation.query.Query;
-import com.yahoo.elide.datastores.aggregation.query.TimeDimensionProjection;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.ConnectionDetails;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.SQLQueryEngine;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.dialects.SQLDialect;
@@ -63,11 +71,13 @@ import java.sql.Connection;
 import java.sql.SQLException;
 import java.util.ArrayList;
 import java.util.Arrays;
-import java.util.Collections;
 import java.util.HashMap;
+import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.List;
 import java.util.Map;
 import java.util.Properties;
+import java.util.Set;
 import java.util.TreeMap;
 import java.util.regex.Pattern;
 import java.util.stream.Collectors;
@@ -78,35 +88,38 @@ import javax.sql.DataSource;
 public abstract class SQLUnitTest {
 
     protected static SQLTable playerStatsTable;
+    protected static SQLTable playerStatsViewTable;
+    protected static Map<String, Argument> playerStatsViewTableArgs;
     protected static EntityDictionary dictionary;
     protected static RSQLFilterDialect filterParser;
     protected static MetaDataStore metaDataStore;
 
     private static final DataSource DUMMY_DATASOURCE = new HikariDataSource();
-    protected static QueryEngine engine;
+    private static final String NEWLINE = System.lineSeparator();
+    protected static SQLQueryEngine engine;
 
     protected QueryEngine.Transaction transaction;
     private static SQLTable videoGameTable;
 
-    protected static Type<?> playerStatsType = getClassType(PlayerStats.class);
-    protected static Type<?> playerStatsViewType = getClassType(PlayerStatsView.class);
+    protected static Type<?> playerStatsType = ClassType.of(PlayerStats.class);
+    protected static Type<?> playerStatsViewType = ClassType.of(PlayerStatsView.class);
 
     // Standard set of test queries used in dialect tests
     protected enum TestQuery {
-        WHERE_DIMS_ONLY (() -> {
-            return Query.builder()
+        WHERE_DIMS_ONLY (() ->
+            Query.builder()
                     .source(playerStatsTable)
                     .dimensionProjection(playerStatsTable.getDimensionProjection("overallRating"))
                     .whereFilter(new FilterPredicate(
                             new Path(PlayerStats.class, dictionary, "overallRating"),
                             Operator.NOTNULL,
-                            new ArrayList<Object>()))
-                    .build();
-        }),
+                            new ArrayList<>()))
+                    .build()
+        ),
         WHERE_AND (() -> {
             FilterPredicate ratingFilter = new FilterPredicate(
                     new Path(PlayerStats.class, dictionary, "overallRating"),
-                    Operator.NOTNULL, new ArrayList<Object>());
+                    Operator.NOTNULL, new ArrayList<>());
             FilterPredicate highScoreFilter = new FilterPredicate(
                 new Path(PlayerStats.class, dictionary, "countryIsoCode"),
                     Operator.IN,
@@ -121,7 +134,7 @@ public abstract class SQLUnitTest {
         WHERE_OR (() -> {
             FilterPredicate ratingFilter = new FilterPredicate(
                     new Path(PlayerStats.class, dictionary, "overallRating"),
-                    Operator.NOTNULL, new ArrayList<Object>());
+                    Operator.NOTNULL, new ArrayList<>());
             FilterPredicate highScoreFilter = new FilterPredicate(
                     new Path(PlayerStats.class, dictionary, "countryIsoCode"),
                     Operator.IN,
@@ -133,30 +146,49 @@ public abstract class SQLUnitTest {
                     .whereFilter(new OrFilterExpression(ratingFilter, highScoreFilter))
                     .build();
         }),
-        HAVING_METRICS_ONLY (() -> {
+        WHERE_WITH_ARGUMENTS (() -> {
+            Set<Argument> dayArgument = new HashSet<>();
+            dayArgument.add(Argument.builder().name("grain").value(TimeGrain.DAY).build());
+
+            Map<String, Argument> monthArgument = new HashMap<>();
+            monthArgument.put("grain", Argument.builder().name("grain").value(TimeGrain.MONTH).build());
+
+            FilterPredicate dayFilter = new FilterPredicate(
+                    new Path(playerStatsType, dictionary, "recordedDate", "recordedDate", dayArgument),
+                    Operator.NOTNULL,
+                    new ArrayList<>());
+
             return Query.builder()
+                    .source(playerStatsTable)
+                    .metricProjection(playerStatsTable.getMetricProjection("highScore"))
+                    .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedDate", "recordedDate", monthArgument))
+                    .whereFilter(dayFilter)
+                    .build();
+        }),
+        HAVING_METRICS_ONLY (() ->
+            Query.builder()
                     .source(playerStatsTable)
                     .metricProjection(playerStatsTable.getMetricProjection("lowScore"))
                     .havingFilter(new FilterPredicate(
                             new Path(PlayerStats.class, dictionary, "lowScore"),
                             Operator.GT,
                             Arrays.asList(9000)))
-                    .build();
-        }),
-        HAVING_DIMS_ONLY (() -> {
-            return Query.builder()
+                    .build()
+        ),
+        HAVING_DIMS_ONLY (() ->
+            Query.builder()
                     .source(playerStatsTable)
                     .dimensionProjection(playerStatsTable.getDimensionProjection("overallRating"))
                     .havingFilter(new FilterPredicate(
                             new Path(PlayerStats.class, dictionary, "overallRating"),
                             Operator.NOTNULL,
-                            new ArrayList<Object>()))
-                    .build();
-        }),
+                            new ArrayList<>()))
+                    .build()
+        ),
         HAVING_METRICS_AND_DIMS (() -> {
             FilterPredicate ratingFilter = new FilterPredicate(
                     new Path(PlayerStats.class, dictionary, "overallRating"),
-                    Operator.NOTNULL, new ArrayList<Object>());
+                    Operator.NOTNULL, new ArrayList<>());
             FilterPredicate highScoreFilter = new FilterPredicate(
                     new Path(PlayerStats.class, dictionary, "highScore"),
                     Operator.GT,
@@ -171,7 +203,7 @@ public abstract class SQLUnitTest {
         HAVING_METRICS_OR_DIMS (() -> {
             FilterPredicate ratingFilter = new FilterPredicate(
                     new Path(PlayerStats.class, dictionary, "overallRating"),
-                    Operator.NOTNULL, new ArrayList<Object>());
+                    Operator.NOTNULL, new ArrayList<>());
             FilterPredicate highScoreFilter = new FilterPredicate(
                     new Path(PlayerStats.class, dictionary, "highScore"),
                     Operator.GT,
@@ -183,15 +215,15 @@ public abstract class SQLUnitTest {
                     .havingFilter(new OrFilterExpression(ratingFilter, highScoreFilter))
                     .build();
         }),
-        PAGINATION_TOTAL (() -> {
-            return Query.builder()
+        PAGINATION_TOTAL (() ->
+            Query.builder()
                     .source(playerStatsTable)
                     .metricProjection(playerStatsTable.getMetricProjection("lowScore"))
                     .dimensionProjection(playerStatsTable.getDimensionProjection("overallRating"))
                     .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedDate"))
                     .pagination(new ImmutablePagination(0, 1, false, true))
-                    .build();
-        }),
+                    .build()
+        ),
         SORT_METRIC_ASC (() -> {
             Map<String, Sorting.SortOrder> sortMap = new TreeMap<>();
             sortMap.put("lowScore", Sorting.SortOrder.asc);
@@ -231,10 +263,10 @@ public abstract class SQLUnitTest {
                     .build();
         }),
         SUBQUERY (() -> {
-            SQLTable playerStatsViewTable = (SQLTable) metaDataStore.getTable("playerStatsView", NO_VERSION);
             return Query.builder()
                     .source(playerStatsViewTable)
                     .metricProjection(playerStatsViewTable.getMetricProjection("highScore"))
+                    .arguments(playerStatsViewTableArgs)
                     .build();
         }),
         ORDER_BY_DIMENSION_NOT_IN_SELECT (() -> {
@@ -246,13 +278,13 @@ public abstract class SQLUnitTest {
                     .sorting(new SortingImpl(sortMap, PlayerStats.class, dictionary))
                     .build();
         }),
-        PAGINATION_METRIC_ONLY (() -> {
-            return Query.builder()
+        PAGINATION_METRIC_ONLY (() ->
+            Query.builder()
                     .source(playerStatsTable)
                     .metricProjection(playerStatsTable.getMetricProjection("lowScore"))
                     .pagination(new ImmutablePagination(10, 5, false, true))
-                    .build();
-        }),
+                    .build()
+        ),
         COMPLICATED (() -> {
             // Sorting
             Map<String, Sorting.SortOrder> sortMap = new TreeMap<>();
@@ -275,21 +307,27 @@ public abstract class SQLUnitTest {
                     .build();
         }),
         NESTED_METRIC_QUERY (() -> {
+            Map<String, Argument> arguments = new HashMap<>();
+            arguments.put("grain", Argument.builder().name("grain").value(TimeGrain.MONTH).build());
             // Sorting
             return Query.builder()
                     .source(playerStatsTable)
                     .metricProjection(playerStatsTable.getMetricProjection("dailyAverageScorePerPeriod"))
+                    .metricProjection(playerStatsTable.getMetricProjection("highScore"))
+                    .metricProjection(playerStatsTable.getMetricProjection("lowScore"))
                     .dimensionProjection(playerStatsTable.getDimensionProjection("overallRating"))
-                    .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedMonth"))
+                    .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedDate", arguments))
                     .build();
         }),
         NESTED_METRIC_WITH_HAVING_QUERY (() -> {
+            Map<String, Argument> arguments = new HashMap<>();
+            arguments.put("grain", Argument.builder().name("grain").value(TimeGrain.MONTH).build());
             // Sorting
             return Query.builder()
                     .source(playerStatsTable)
                     .metricProjection(playerStatsTable.getMetricProjection("dailyAverageScorePerPeriod"))
                     .dimensionProjection(playerStatsTable.getDimensionProjection("overallRating"))
-                    .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedMonth"))
+                    .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedDate", arguments))
                     .havingFilter(new FilterPredicate(
                             new Path(PlayerStats.class, dictionary, "dailyAverageScorePerPeriod"),
                             Operator.GT,
@@ -297,22 +335,26 @@ public abstract class SQLUnitTest {
                     .build();
         }),
         NESTED_METRIC_WITH_WHERE_QUERY (() -> {
+            Map<String, Argument> arguments = new HashMap<>();
+            arguments.put("grain", Argument.builder().name("grain").value(TimeGrain.MONTH).build());
             // Sorting
             return Query.builder()
                     .source(playerStatsTable)
                     .metricProjection(playerStatsTable.getMetricProjection("dailyAverageScorePerPeriod"))
                     .dimensionProjection(playerStatsTable.getDimensionProjection("overallRating"))
-                    .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedMonth"))
+                    .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedDate", arguments))
                     .whereFilter(parseFilterExpression("countryIsoCode==USA", playerStatsType, false))
                     .build();
         }),
         NESTED_METRIC_WITH_PAGINATION_QUERY (() -> {
+            Map<String, Argument> arguments = new HashMap<>();
+            arguments.put("grain", Argument.builder().name("grain").value(TimeGrain.MONTH).build());
             // Sorting
             return Query.builder()
                     .source(playerStatsTable)
                     .metricProjection(playerStatsTable.getMetricProjection("dailyAverageScorePerPeriod"))
                     .dimensionProjection(playerStatsTable.getDimensionProjection("overallRating"))
-                    .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedMonth"))
+                    .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedDate", arguments))
                     .pagination(new ImmutablePagination(0, 1, false, true))
                     .build();
         }),
@@ -320,33 +362,95 @@ public abstract class SQLUnitTest {
             Map<String, Sorting.SortOrder> sortMap = new TreeMap<>();
             sortMap.put("overallRating", Sorting.SortOrder.desc);
             sortMap.put("dailyAverageScorePerPeriod", Sorting.SortOrder.desc);
+
+            Map<String, Argument> arguments = new HashMap<>();
+            arguments.put("grain", Argument.builder().name("grain").value(TimeGrain.MONTH).build());
             // Sorting
             return Query.builder()
                     .source(playerStatsTable)
                     .metricProjection(playerStatsTable.getMetricProjection("dailyAverageScorePerPeriod"))
                     .dimensionProjection(playerStatsTable.getDimensionProjection("overallRating"))
-                    .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedMonth"))
+                    .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedDate", arguments))
                     .sorting(new SortingImpl(sortMap, PlayerStats.class, dictionary))
                     .build();
         }),
-        LEFT_JOIN (() -> {
+        NESTED_METRIC_WITH_ALIASES_QUERY (() -> {
+            Set<MetricProjection> metricProjections = new LinkedHashSet<>();
+            metricProjections.add(playerStatsTable.getMetricProjection("dailyAverageScorePerPeriod", "average1"));
+            metricProjections.add(playerStatsTable.getMetricProjection("dailyAverageScorePerPeriod", "average2"));
+
+            Set<DimensionProjection> dimnesionProjections = new LinkedHashSet<>();
+            dimnesionProjections.add(playerStatsTable.getDimensionProjection("overallRating", "rating"));
+            dimnesionProjections.add(playerStatsTable.getDimensionProjection("playerLevel", "level"));
+
+            Map<String, Argument> monthArgument = new HashMap<>();
+            monthArgument.put("grain", Argument.builder().name("grain").value(TimeGrain.MONTH).build());
+            Set<Argument> dayArgument = new HashSet<>();
+            dayArgument.add(Argument.builder().name("grain").value(TimeGrain.DAY).build());
+
+            // where filter with alias
+            FilterPredicate playerLevelFilter = new FilterPredicate(
+                            new Path(playerStatsType, dictionary, "playerLevel", "level", new HashSet<>()),
+                            Operator.IN,
+                            Arrays.asList(1, 2));
+            FilterPredicate dayFilter = new FilterPredicate(
+                            new Path(playerStatsType, dictionary, "recordedDate", "recordedDate", dayArgument),
+                            Operator.NOTNULL,
+                            new ArrayList<>());
+            // forces a join to look up countryIsoCode
+            FilterExpression countryIsoCodeFilter = parseFilterExpression("countryIsoCode==USA", playerStatsType, false);
+            AndFilterExpression andFilterExpression = new AndFilterExpression(playerLevelFilter, countryIsoCodeFilter);
+            FilterExpression wherePredicate = new AndFilterExpression(andFilterExpression, dayFilter);
+
+            // having filter with alias
+            FilterPredicate havingPredicate = new FilterPredicate(
+                            new Path(playerStatsType, dictionary, "dailyAverageScorePerPeriod", "average2", new HashSet<>()),
+                            Operator.GT,
+                            Arrays.asList(10));
+
+            // sorting with alias
+            Map<String, Sorting.SortOrder> sortMap = new TreeMap<>();
+            sortMap.put("rating", Sorting.SortOrder.desc);
+            Set<Attribute> sortAttributes = new HashSet<>(Arrays.asList(Attribute.builder()
+                            .type(STRING_TYPE)
+                            .name("overallRating")
+                            .alias("rating")
+                            .build()));
+
             return Query.builder()
+                    .source(playerStatsTable)
+                    .metricProjections(metricProjections)
+                    .dimensionProjections(dimnesionProjections)
+                    .timeDimensionProjection(playerStatsTable.getTimeDimensionProjection("recordedDate", "byMonth", monthArgument))
+                    .whereFilter(wherePredicate)
+                    .havingFilter(havingPredicate)
+                    .sorting(new SortingImpl(sortMap, playerStatsType, sortAttributes, dictionary))
+                    .build();
+        }),
+        LEFT_JOIN (() ->
+            Query.builder()
                     .source(videoGameTable)
                     .dimensionProjection(videoGameTable.getDimensionProjection("playerName"))
-                    .build();
-        }),
-        INNER_JOIN (() -> {
-            return Query.builder()
+                    .build()
+        ),
+        INNER_JOIN (() ->
+            Query.builder()
                     .source(videoGameTable)
                     .dimensionProjection(videoGameTable.getDimensionProjection("playerNameInnerJoin"))
-                    .build();
-        }),
-        CROSS_JOIN (() -> {
-            return Query.builder()
+                    .build()
+        ),
+        CROSS_JOIN (() ->
+            Query.builder()
                     .source(videoGameTable)
                     .dimensionProjection(videoGameTable.getDimensionProjection("playerNameCrossJoin"))
-                    .build();
-        });
+                    .build()
+        ),
+        METRIC_JOIN(() ->
+            Query.builder()
+                    .source(videoGameTable)
+                    .metricProjection(videoGameTable.getMetricProjection("normalizedHighScore"))
+                    .build()
+        );
 
         private Provider<Query> queryProvider;
 
@@ -361,7 +465,7 @@ public abstract class SQLUnitTest {
 
     protected Pattern repeatedWhitespacePattern = Pattern.compile("\\s\\s*");
 
-    public static void init(SQLDialect sqlDialect) {
+    public static void init(SQLDialect sqlDialect, Set<Optimizer> optimizers, MetaDataStore metaDataStore) {
         Properties properties = new Properties();
         properties.put("driverClassName", "org.h2.Driver");
 
@@ -377,7 +481,7 @@ public abstract class SQLUnitTest {
             throw new IllegalStateException(e);
         }
 
-        metaDataStore = new MetaDataStore(getClassType(ClassScanner.getAllClasses("com.yahoo.elide.datastores.aggregation.example")), false);
+        SQLUnitTest.metaDataStore = metaDataStore;
 
         dictionary = new EntityDictionary(new HashMap<>());
         dictionary.bindEntity(PlayerStatsWithView.class);
@@ -389,6 +493,7 @@ public abstract class SQLUnitTest {
         dictionary.bindEntity(CountryView.class);
         dictionary.bindEntity(CountryViewNested.class);
         dictionary.bindEntity(Continent.class);
+        dictionary.bindEntity(GameRevenue.class);
         filterParser = new RSQLFilterDialect(dictionary);
 
         //Manually register the serdes because we are not running a complete Elide service.
@@ -409,20 +514,33 @@ public abstract class SQLUnitTest {
         connectionDetailsMap.put("mycon", new ConnectionDetails(dataSource, sqlDialect));
         connectionDetailsMap.put("SalesDBConnection", new ConnectionDetails(DUMMY_DATASOURCE, sqlDialect));
 
-        engine = new SQLQueryEngine(metaDataStore, new ConnectionDetails(dataSource, sqlDialect), connectionDetailsMap);
-
+        engine = new SQLQueryEngine(metaDataStore, new ConnectionDetails(dataSource, sqlDialect),
+                connectionDetailsMap, optimizers, new DefaultQueryValidator(metaDataStore.getMetadataDictionary()));
         playerStatsTable = (SQLTable) metaDataStore.getTable("playerStats", NO_VERSION);
         videoGameTable = (SQLTable) metaDataStore.getTable("videoGame", NO_VERSION);
+        playerStatsViewTable = (SQLTable) metaDataStore.getTable("playerStatsView", NO_VERSION);
+        playerStatsViewTableArgs = new HashMap<>();
+        playerStatsViewTableArgs.put("rating", Argument.builder().name("overallRating").value("Great").build());
+        playerStatsViewTableArgs.put("minScore", Argument.builder().name("minScore").value("0").build());
     }
 
     private static String getCompatabilityMode(String dialectType) {
         if (dialectType.equals(SQLDialectFactory.getMySQLDialect().getDialectType())) {
             return ";MODE=MySQL";
-        } else if (dialectType.equals(SQLDialectFactory.getPostgresDialect().getDialectType())) {
+        }
+        if (dialectType.equals(SQLDialectFactory.getPostgresDialect().getDialectType())) {
             return ";MODE=PostgreSQL";
         }
 
         return "";
+    }
+
+    public static void init(SQLDialect dialect) {
+        MetaDataStore metaDataStore = new MetaDataStore(
+                getClassType(ClassScanner.getAnnotatedClasses("com.yahoo.elide.datastores.aggregation.example",
+                        Include.class)),
+                false);
+        init(dialect, new HashSet<>(), metaDataStore);
     }
 
     public static void init() {
@@ -437,13 +555,6 @@ public abstract class SQLUnitTest {
     @AfterEach
     public void end() {
         transaction.close();
-    }
-
-    public static TimeDimensionProjection toProjection(TimeDimension dimension, TimeGrain grain) {
-        return engine.constructTimeDimensionProjection(
-                dimension,
-                dimension.getName(),
-                Collections.emptyMap());
     }
 
     protected static List<Object> toList(Iterable<Object> data) {
@@ -462,14 +573,11 @@ public abstract class SQLUnitTest {
      * Helper for comparing lists of queries.
      */
     protected void compareQueryLists(List<String> expected, List<String> actual) {
-        if (expected == null && actual == null) {
+        if (expected == actual) {
             return;
-        } else if (expected == null) {
-            fail("Expected a null query List, but actual was non-null");
-        } else if (actual == null) {
-            fail("Expected a non-null query List, but actual was null");
         }
-
+        assertNotNull(expected, "Expected a null query List, but actual was non-null");
+        assertNotNull(actual, "Expected a non-null query List, but actual was null");
         assertEquals(expected.size(), actual.size(), "Query List sizes do not match");
 
 
@@ -491,7 +599,7 @@ public abstract class SQLUnitTest {
      * Because this is for unit testing, the only time a ParseException should occur
      * is when a test is incorrectly configured.
      */
-    private static FilterExpression parseFilterExpression(String expressionText, Type<?> entityType,
+    protected static FilterExpression parseFilterExpression(String expressionText, Type<?> entityType,
                                                           boolean allowNestedToManyAssociations) {
         try {
             return filterParser.parseFilterExpression(expressionText, entityType, allowNestedToManyAssociations);
@@ -516,5 +624,170 @@ public abstract class SQLUnitTest {
         try (QueryEngine.Transaction transaction = engine.beginTransaction()) {
             assertDoesNotThrow(() -> engine.executeQuery(query, transaction));
         }
+    }
+
+    protected String getExpectedNestedMetricWithSortingQuery(boolean useAliasForOrderByClause) {
+        String expected = "SELECT AVG(`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`highScore`) "
+                + "AS `dailyAverageScorePerPeriod`,`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`overallRating` AS `overallRating`,"
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`recordedDate` AS `recordedDate` "
+                + "FROM (SELECT MAX(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`highScore`) AS `highScore`,"
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating` AS `overallRating`,"
+                + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM-dd'), 'yyyy-MM-dd') AS `recordedDate_XXX`,"
+                + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM'), 'yyyy-MM') AS `recordedDate` "
+                + "FROM `playerStats` AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats` GROUP BY "
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating`, "
+                + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM-dd'), 'yyyy-MM-dd'), "
+                + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM'), 'yyyy-MM') ) "
+                + "AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX` GROUP BY "
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`overallRating`, "
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`recordedDate` ";
+
+        if (useAliasForOrderByClause) {
+            expected = expected + "ORDER BY `dailyAverageScorePerPeriod` DESC,`overallRating` DESC";
+
+        } else {
+            expected = expected
+                    + "ORDER BY AVG(`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`highScore`) DESC,"
+                    + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`overallRating` DESC";
+        }
+        return expected;
+    }
+
+    protected String getExpectedNestedMetricWithHavingQuery() {
+        return "SELECT AVG(`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`highScore`) "
+                + "AS `dailyAverageScorePerPeriod`,`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`overallRating` AS `overallRating`,"
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`recordedDate` AS `recordedDate` "
+                + "FROM (SELECT MAX(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`highScore`) AS `highScore`,"
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating` AS `overallRating`,"
+                + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM-dd'), 'yyyy-MM-dd') AS `recordedDate_XXX`,"
+                + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM'), 'yyyy-MM') AS `recordedDate` "
+                + "FROM `playerStats` AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats` GROUP BY "
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating`, "
+                + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM-dd'), 'yyyy-MM-dd'), "
+                + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM'), 'yyyy-MM') ) "
+                + "AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX` GROUP BY "
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`overallRating`, "
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`recordedDate` "
+                + "HAVING AVG(`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`highScore`) "
+                + "> :XXX\n";
+    }
+
+    protected String getExpectedNestedMetricWithWhereQuery() {
+        return "SELECT AVG(`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`highScore`) "
+                + "AS `dailyAverageScorePerPeriod`,`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`overallRating` AS `overallRating`,"
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`recordedDate` AS `recordedDate` "
+                + "FROM (SELECT MAX(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`highScore`) AS `highScore`,"
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating` AS `overallRating`,"
+                + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM-dd'), 'yyyy-MM-dd') AS `recordedDate_XXX`,"
+                + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM'), 'yyyy-MM') AS `recordedDate` "
+                + "FROM `playerStats` AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats` "
+                + "LEFT OUTER JOIN `countries` AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats_country_XXX` ON `com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`country_id` = `com_yahoo_elide_datastores_aggregation_example_PlayerStats_country_XXX`.`id` "
+                + "WHERE `com_yahoo_elide_datastores_aggregation_example_PlayerStats_country_XXX`.`iso_code` IN (:XXX) "
+                + "GROUP BY `com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating`, "
+                + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM-dd'), 'yyyy-MM-dd'), "
+                + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM'), 'yyyy-MM') ) "
+                + "AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX` GROUP BY "
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`overallRating`, "
+                + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`recordedDate`\n";
+    }
+
+    protected String getExpectedNestedMetricQuery() {
+        return "SELECT AVG(`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`highScore`) AS `dailyAverageScorePerPeriod`,"
+                        + "MAX(`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`INNER_AGG_XXX`) AS `highScore`,"
+                        + "MIN(`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`INNER_AGG_XXX`) AS `lowScore`,"
+                        + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`overallRating` AS `overallRating`,"
+                        + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`recordedDate` AS `recordedDate` "
+                        + "FROM (SELECT MAX(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`highScore`) AS `highScore`,"
+                        + "MAX(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`highScore`) AS `INNER_AGG_XXX`,"
+                        + "MIN(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`lowScore`) AS `INNER_AGG_XXX`,"
+                        + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating` AS `overallRating`,"
+                        + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM-dd'), 'yyyy-MM-dd') AS `recordedDate_XXX`,"
+                        + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM'), 'yyyy-MM') AS `recordedDate` "
+                        + "FROM `playerStats` AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats` GROUP BY "
+                        + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating`, "
+                        + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM-dd'), 'yyyy-MM-dd'), "
+                        + "PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM'), 'yyyy-MM') ) "
+                        + "AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX` GROUP BY "
+                        + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`overallRating`, "
+                        + "`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`recordedDate`\n";
+
+    }
+
+    protected String getExpectedNestedMetricWithAliasesSQL(boolean useAliasForOrderByClause) {
+
+        String expectedSQL =
+                          "SELECT \n"
+                        + "    AVG(`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`highScore`) AS `dailyAverageScorePerPeriod_165126357`,\n"
+                        + "    AVG(`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`highScore`) AS `dailyAverageScorePerPeriod_165126481`,\n"
+                        + "    `com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`overallRating_207658499` AS `overallRating_207658499`,\n"
+                        + "    `com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`playerLevel_96024484` AS `playerLevel_96024484`,\n"
+                        + "    `com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`recordedDate_155839778` AS `recordedDate_155839778` \n"
+                        + "FROM \n"
+                        + "    (\n"
+                        + "        SELECT \n"
+                        + "            MAX(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`highScore`) AS `highScore`,\n"
+                        + "            `com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating` AS `overallRating_207658499`,\n"
+                        + "            CASE WHEN `com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating` = 'Good' THEN 1 ELSE 2 END AS `playerLevel_96024484`,\n"
+                        + "            PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM-dd'), 'yyyy-MM-dd') AS `recordedDate_55557339`,\n"
+                        + "            PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM'), 'yyyy-MM') AS `recordedDate_155839778` \n"
+                        + "        FROM \n"
+                        + "            `playerStats` AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats` \n"
+                        + "            LEFT OUTER JOIN \n"
+                        + "            `countries` AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats_country_XXX` \n"
+                        + "            ON \n"
+                        + "            `com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`country_id` = `com_yahoo_elide_datastores_aggregation_example_PlayerStats_country_XXX`.`id` \n"
+                        + "        WHERE \n"
+                        + "            (\n"
+                        + "                (CASE WHEN `com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating` = 'Good' THEN 1 ELSE 2 END IN (:XXX, :XXX) \n"
+                        + "                AND \n"
+                        + "                `com_yahoo_elide_datastores_aggregation_example_PlayerStats_country_XXX`.`iso_code` IN (:XXX)) \n"
+                        + "                AND \n"
+                        + "                PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM-dd'), 'yyyy-MM-dd') IS NOT NULL\n"
+                        + "            ) \n"
+                        + "        GROUP BY \n"
+                        + "            `com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating`, \n"
+                        + "            CASE WHEN `com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`overallRating` = 'Good' THEN 1 ELSE 2 END, \n"
+                        + "            PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM-dd'), 'yyyy-MM-dd'), \n"
+                        + "            PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM'), 'yyyy-MM') \n"
+                        + "    ) AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX` \n"
+                        + "GROUP BY \n"
+                        + "    `com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`overallRating_207658499`, \n"
+                        + "    `com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`playerLevel_96024484`, \n"
+                        + "    `com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`recordedDate_155839778` \n"
+                        + "HAVING \n"
+                        + "    AVG(`com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`highScore`) > :XXX \n"
+                        + "ORDER BY \n"
+                        + "    `com_yahoo_elide_datastores_aggregation_example_PlayerStats_XXX`.`overallRating_207658499` DESC ";
+
+        if (useAliasForOrderByClause) {
+            // Changing last line to have alias only.
+            String[] split = expectedSQL.split(NEWLINE);
+            split[split.length - 1] = "`overallRating_207658499` DESC ";
+            expectedSQL = String.join(NEWLINE, split);
+        }
+        return formatInSingleLine(expectedSQL);
+    }
+
+    protected String getExpectedWhereWithArgumentsSQL() {
+
+        String expectedSQL =
+                          "SELECT \n"
+                        + "    MAX(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`highScore`) AS `highScore`,\n"
+                        + "    PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM'), 'yyyy-MM') AS `recordedDate` \n"
+                        + "FROM \n"
+                        + "    `playerStats` AS `com_yahoo_elide_datastores_aggregation_example_PlayerStats` \n"
+                        + "WHERE \n"
+                        + "     PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM-dd'), 'yyyy-MM-dd') IS NOT NULL \n"
+                        + "GROUP BY \n"
+                        + "     PARSEDATETIME(FORMATDATETIME(`com_yahoo_elide_datastores_aggregation_example_PlayerStats`.`recordedDate`, 'yyyy-MM'), 'yyyy-MM') ";
+
+        return formatInSingleLine(expectedSQL);
+    }
+
+    private String formatInSingleLine(String expectedSQL) {
+        // Remove spaces at the start of each line with in string
+        expectedSQL = expectedSQL.replaceAll("(?m)^\\s*", "");
+        expectedSQL = expectedSQL.replace(NEWLINE, "");
+        return repeatedWhitespacePattern.matcher(expectedSQL).replaceAll(" ");
     }
 }

@@ -15,6 +15,7 @@ import com.yahoo.elide.core.filter.dialect.RSQLFilterDialect;
 import com.yahoo.elide.core.filter.expression.FilterExpression;
 import com.yahoo.elide.core.type.Type;
 import com.yahoo.elide.core.utils.TypeHelper;
+import com.yahoo.elide.datastores.aggregation.AggregationDataStore;
 import com.yahoo.elide.datastores.aggregation.annotation.CardinalitySize;
 import com.yahoo.elide.datastores.aggregation.annotation.TableMeta;
 import com.yahoo.elide.datastores.aggregation.annotation.Temporal;
@@ -23,27 +24,34 @@ import com.yahoo.elide.datastores.aggregation.query.ColumnProjection;
 import com.yahoo.elide.datastores.aggregation.query.Queryable;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.annotation.FromSubquery;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.annotation.FromTable;
+import com.yahoo.elide.modelconfig.model.Named;
+
+import org.apache.commons.lang3.StringUtils;
+
+import lombok.AccessLevel;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.ToString;
 
 import java.util.Arrays;
 import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Map;
 import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import javax.persistence.Id;
+import javax.persistence.ManyToOne;
 import javax.persistence.OneToMany;
 
 /**
  * Super class of all logical or physical tables.
  */
-@Include(type = "table")
+@Include(name = "table")
 @Getter
 @EqualsAndHashCode
 @ToString
-public abstract class Table implements Versioned {
+public abstract class Table implements Versioned, Named {
 
     @Id
     private final String id;
@@ -65,6 +73,9 @@ public abstract class Table implements Versioned {
 
     private final boolean isFact;
 
+    @ManyToOne
+    private final Namespace namespace;
+
     @OneToMany
     @ToString.Exclude
     private final Set<Column> columns;
@@ -84,6 +95,10 @@ public abstract class Table implements Versioned {
     @ToString.Exclude
     private final Set<String> tags;
 
+    @ToString.Exclude
+    @Exclude
+    private final Set<String> hints;
+
     @Exclude
     @ToString.Exclude
     private final Map<String, Column> columnMap;
@@ -91,16 +106,33 @@ public abstract class Table implements Versioned {
     @Exclude
     private final String alias;
 
-    public Table(Type<?> cls, EntityDictionary dictionary) {
+    @OneToMany
+    @ToString.Exclude
+    @Getter(value = AccessLevel.NONE)
+    private final Set<ArgumentDefinition> arguments;
+
+    public Set<ArgumentDefinition> getArgumentDefinitions() {
+        return this.arguments;
+    }
+
+    @Exclude
+    private Type<?> model;
+
+    public Table(Namespace namespace, Type<?> cls, EntityDictionary dictionary) {
         if (!dictionary.getBoundClasses().contains(cls)) {
             throw new IllegalArgumentException(
                     String.format("Table class {%s} is not defined in dictionary.", cls));
         }
 
+        this.namespace = namespace;
+        namespace.addTable(this);
+
         this.name = dictionary.getJsonAliasFor(cls);
         this.version = EntityDictionary.getModelVersion(cls);
+        this.model = cls;
 
         this.alias = TypeHelper.getTypeAlias(cls);
+
         this.id = this.name;
 
         TableMeta meta = cls.getAnnotation(TableMeta.class);
@@ -130,14 +162,24 @@ public abstract class Table implements Versioned {
             this.category = meta.category();
             this.requiredFilter = meta.filterTemplate();
             this.tags = new HashSet<>(Arrays.asList(meta.tags()));
+            this.hints = new LinkedHashSet<>(Arrays.asList(meta.hints()));
             this.cardinality = meta.size();
+            if (meta.arguments().length == 0) {
+                this.arguments = new HashSet<>();
+            } else {
+                this.arguments = Arrays.stream(meta.arguments())
+                        .map(argument -> new ArgumentDefinition(getId(), argument))
+                        .collect(Collectors.toCollection(LinkedHashSet::new));
+            }
         } else {
             this.friendlyName = name;
             this.description = null;
             this.category = null;
             this.requiredFilter = null;
             this.tags = new HashSet<>();
+            this.hints = new LinkedHashSet<>();
             this.cardinality = CardinalitySize.UNKNOWN;
+            this.arguments = new HashSet<>();
         }
     }
 
@@ -164,24 +206,29 @@ public abstract class Table implements Versioned {
         Set<Column> columns =  dictionary.getAllFields(cls).stream()
                 .filter(field -> {
                     ValueType valueType = getValueType(cls, field, dictionary);
-                    return valueType != null && valueType != ValueType.RELATIONSHIP;
+                    return valueType != ValueType.UNKNOWN;
                 })
                 .map(field -> {
                     if (isMetricField(dictionary, cls, field)) {
                         return constructMetric(field, dictionary);
-                    } else if (dictionary.attributeOrRelationAnnotationExists(cls, field, Temporal.class)) {
-                        return constructTimeDimension(field, dictionary);
-                    } else {
-                        return constructDimension(field, dictionary);
                     }
+                    if (dictionary.attributeOrRelationAnnotationExists(cls, field, Temporal.class)) {
+                        return constructTimeDimension(field, dictionary);
+                    }
+                    return constructDimension(field, dictionary);
                 })
                 .collect(Collectors.toSet());
 
-        // add id field if exists and this is not a fact model
-        if (!this.isFact() && dictionary.getIdFieldName(cls) != null) {
-            columns.add(constructDimension(dictionary.getIdFieldName(cls), dictionary));
-        }
+        // add id field if exists
+        if (dictionary.getIdFieldName(cls) != null) {
 
+            String idFieldName = dictionary.getIdFieldName(cls);
+            if (AggregationDataStore.isAggregationStoreModel(cls)) {
+                columns.add(constructMetric(idFieldName, dictionary));
+            } else {
+                columns.add(constructDimension(idFieldName, dictionary));
+            }
+        }
         return columns;
     }
 
@@ -240,7 +287,7 @@ public abstract class Table implements Versioned {
      * @param <T> metadata class
      * @return column as requested type if found
      */
-    protected final <T extends Column> T getColumn(Class<T> cls, String fieldName) {
+    public final <T extends Column> T getColumn(Class<T> cls, String fieldName) {
         Column column = columnMap.get(fieldName);
         return column != null && cls.isAssignableFrom(column.getClass()) ? cls.cast(column) : null;
     }
@@ -280,7 +327,7 @@ public abstract class Table implements Versioned {
         Type<?> cls = dictionary.getEntityClass(name, version);
         RSQLFilterDialect filterDialect = new RSQLFilterDialect(dictionary);
 
-        if (requiredFilter != null && !requiredFilter.isEmpty()) {
+        if (StringUtils.isNotEmpty(requiredFilter)) {
             try {
                 return filterDialect.parseFilterExpression(requiredFilter, cls, false, true);
             } catch (ParseException e) {
@@ -290,7 +337,16 @@ public abstract class Table implements Versioned {
         return null;
     }
 
-    public abstract ColumnProjection toProjection(Column column);
+    public boolean hasArgumentDefinition(String argName) {
+        return hasName(this.arguments, argName);
+    }
+
+    public ArgumentDefinition getArgumentDefinition(String argName) {
+        return this.arguments.stream()
+                        .filter(arg -> arg.getName().equals(argName))
+                        .findFirst()
+                        .orElse(null);
+    }
 
     public abstract Queryable toQueryable();
 }

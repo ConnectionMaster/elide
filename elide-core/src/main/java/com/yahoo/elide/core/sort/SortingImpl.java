@@ -21,7 +21,6 @@ import java.util.Collections;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.Optional;
 import java.util.Set;
 import java.util.stream.Collectors;
 import javax.ws.rs.core.MultivaluedMap;
@@ -52,7 +51,7 @@ public class SortingImpl implements Sorting {
      * @param dictionary The entity dictionary
      */
     public SortingImpl(final Map<String, SortOrder> sortingRules, Type<?> type, EntityDictionary dictionary) {
-        this(sortingRules, type, Collections.EMPTY_SET, dictionary);
+        this(sortingRules, type, Collections.emptySet(), dictionary);
     }
 
     /**
@@ -62,7 +61,7 @@ public class SortingImpl implements Sorting {
      * @param dictionary The entity dictionary
      */
     public SortingImpl(final Map<String, SortOrder> sortingRules, Class<?> type, EntityDictionary dictionary) {
-        this(sortingRules, new ClassType<>(type), dictionary);
+        this(sortingRules, ClassType.of(type), dictionary);
     }
 
     /**
@@ -162,18 +161,18 @@ public class SortingImpl implements Sorting {
      * @param queryParams The query params on the request.
      * @return The Sorting instance (default or specific).
      */
-    public static Sorting parseQueryParams(final Optional<MultivaluedMap<String, String>> queryParams,
+    public static Sorting parseQueryParams(final MultivaluedMap<String, String> queryParams,
                                            Type<?> type, EntityDictionary dictionary) {
 
-        if (! queryParams.isPresent()) {
+        if (queryParams.isEmpty()) {
             return DEFAULT_EMPTY_INSTANCE;
         }
 
-        List<String> sortRules = queryParams.get().entrySet().stream()
+        List<String> sortRules = queryParams.entrySet().stream()
                 .filter(entry -> entry.getKey().equals("sort"))
                 .map(entry -> entry.getValue().get(0))
                 .collect(Collectors.toList());
-        return parseSortRules(sortRules, type, Collections.EMPTY_SET, dictionary);
+        return parseSortRules(sortRules, type, Collections.emptySet(), dictionary);
     }
 
     /**
@@ -184,7 +183,7 @@ public class SortingImpl implements Sorting {
      * @return Sorting object.
      */
     public static Sorting parseSortRule(String sortRule, Type<?> type, EntityDictionary dictionary) {
-        return parseSortRules(Arrays.asList(sortRule), type, Collections.EMPTY_SET, dictionary);
+        return parseSortRules(Arrays.asList(sortRule), type, Collections.emptySet(), dictionary);
     }
 
     /**

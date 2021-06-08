@@ -6,6 +6,7 @@
 package com.yahoo.elide.datastores.aggregation.example;
 
 import com.yahoo.elide.annotation.Include;
+import com.yahoo.elide.annotation.ReadPermission;
 import com.yahoo.elide.datastores.aggregation.annotation.DimensionFormula;
 import com.yahoo.elide.datastores.aggregation.annotation.Join;
 import com.yahoo.elide.datastores.aggregation.annotation.JoinType;
@@ -21,6 +22,7 @@ import javax.persistence.Id;
  */
 @Include
 @FromTable(name = "videoGames", dbConnectionName = "mycon")
+@ReadPermission(expression = "admin.user or player name filter")
 public class VideoGame {
     @Setter
     private Long id;
@@ -38,7 +40,13 @@ public class VideoGame {
     private Float timeSpentPerGame;
 
     @Setter
+    private Float normalizedHighScore;
+
+    @Setter
     private Player player;
+
+    @Setter
+    private PlayerStats playerStats;
 
     @Setter
     private Player playerInnerJoin;
@@ -61,32 +69,44 @@ public class VideoGame {
     }
 
     @Column(name = "game_rounds")
-    @MetricFormula("SUM({{game_rounds}})")
+    @MetricFormula("SUM({{$game_rounds}})")
     public Long getSessions() {
         return sessions;
     }
 
-    @MetricFormula("SUM({{timeSpent}})")
+    @MetricFormula("SUM({{$timeSpent}})")
     public Long getTimeSpent() {
         return timeSpent;
     }
 
-    @MetricFormula("({{timeSpent}} / (CASE WHEN SUM({{game_rounds}}) = 0 THEN 1 ELSE {{sessions}} END))")
+    @MetricFormula("({{timeSpent}} / (CASE WHEN SUM({{$game_rounds}}) = 0 THEN 1 ELSE {{sessions}} END))")
     public Float getTimeSpentPerSession() {
         return timeSpentPerSession;
     }
 
+    @ReadPermission(expression = "operator")
     @MetricFormula("{{timeSpentPerSession}} / 100")
     public Float getTimeSpentPerGame() {
         return timeSpentPerGame;
     }
 
-    @Join(value = "{{player_id}} = {{player.id}}", type = JoinType.LEFT)
+
+    @MetricFormula("{{playerStats.highScore}} / {{timeSpent}}")
+    public Float getNormalizedHighScore() {
+        return normalizedHighScore;
+    }
+
+    @Join(value = "{{$player_id}} = {{player.$id}}", type = JoinType.LEFT)
     public Player getPlayer() {
         return player;
     }
 
-    @Join(value = "{{player_id}} = {{playerInnerJoin.id}}", type = JoinType.INNER)
+    @Join(value = "{{$player_id}} = {{playerStats.$id}}", type = JoinType.LEFT)
+    public PlayerStats getPlayerStats() {
+        return playerStats;
+    }
+
+    @Join(value = "{{$player_id}} = {{playerInnerJoin.$id}}", type = JoinType.INNER)
     public Player getPlayerInnerJoin() {
         return playerInnerJoin;
     }

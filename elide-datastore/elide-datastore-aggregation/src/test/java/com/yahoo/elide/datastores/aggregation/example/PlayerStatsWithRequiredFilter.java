@@ -5,6 +5,7 @@
  */
 package com.yahoo.elide.datastores.aggregation.example;
 
+import static com.yahoo.elide.datastores.aggregation.example.TimeGrainDefinitions.DATE_FORMAT;
 import com.yahoo.elide.annotation.Include;
 import com.yahoo.elide.datastores.aggregation.annotation.CardinalitySize;
 import com.yahoo.elide.datastores.aggregation.annotation.ColumnMeta;
@@ -15,6 +16,8 @@ import com.yahoo.elide.datastores.aggregation.annotation.MetricFormula;
 import com.yahoo.elide.datastores.aggregation.annotation.TableMeta;
 import com.yahoo.elide.datastores.aggregation.annotation.Temporal;
 import com.yahoo.elide.datastores.aggregation.annotation.TimeGrainDefinition;
+import com.yahoo.elide.datastores.aggregation.example.dimensions.Country;
+import com.yahoo.elide.datastores.aggregation.example.dimensions.SubCountry;
 import com.yahoo.elide.datastores.aggregation.metadata.enums.TimeGrain;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.annotation.FromTable;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.annotation.VersionQuery;
@@ -29,7 +32,7 @@ import javax.persistence.Id;
 /**
  * A root level entity for testing AggregationDataStore.
  */
-@Include(type = "playerStatsFiltered")
+@Include(name = "playerStatsFiltered")
 @VersionQuery(sql = "SELECT COUNT(*) from playerStats")
 @EqualsAndHashCode
 @ToString
@@ -42,7 +45,6 @@ import javax.persistence.Id;
 )
 public class PlayerStatsWithRequiredFilter {
     public static final String FILTER_TEMPLATE = "recordedDate>={{start}};recordedDate<{{end}}";
-    public static final String DATE_FORMAT = "PARSEDATETIME(FORMATDATETIME({{}}, 'yyyy-MM-dd'), 'yyyy-MM-dd')";
 
     /**
      * PK.
@@ -134,7 +136,7 @@ public class PlayerStatsWithRequiredFilter {
         this.highScore = highScore;
     }
 
-    @MetricFormula(value = "{{highScore}}")
+    @MetricFormula(value = "{{$highScore}}")
     @ColumnMeta(description = "highScore with no aggregation")
     public long getHighScoreNoAgg() {
         return highScore;
@@ -143,7 +145,7 @@ public class PlayerStatsWithRequiredFilter {
         this.highScore = highScore;
     }
 
-    @MetricFormula("MIN({{lowScore}})")
+    @MetricFormula("MIN({{$lowScore}})")
     @ColumnMeta(description = "very low score", category = "Score Category")
     public long getLowScore() {
         return lowScore;
@@ -163,7 +165,7 @@ public class PlayerStatsWithRequiredFilter {
         this.overallRating = overallRating;
     }
 
-    @Join("{{country_id}} = {{country.id}}")
+    @Join("{{$country_id}} = {{country.$id}}")
     public Country getCountry() {
         return country;
     }
@@ -199,7 +201,7 @@ public class PlayerStatsWithRequiredFilter {
         this.countryIsoCode = isoCode;
     }
 
-    @Join("{{sub_country_id}} = {{subCountry.id}}")
+    @Join("{{$sub_country_id}} = {{subCountry.$id}}")
     public SubCountry getSubCountry() {
         return subCountry;
     }
@@ -218,7 +220,7 @@ public class PlayerStatsWithRequiredFilter {
         this.subCountryIsoCode = isoCode;
     }
 
-    @Join("{{player_id}} = {{player.id}}")
+    @Join("{{$player_id}} = {{player.$id}}")
     public Player getPlayer() {
         return player;
     }
@@ -227,7 +229,7 @@ public class PlayerStatsWithRequiredFilter {
         this.player = player;
     }
 
-    @Join("{{player2_id}} = {{player2.id}}")
+    @Join("{{$player2_id}} = {{player2.$id}}")
     public Player getPlayer2() {
         return player2;
     }
@@ -264,7 +266,7 @@ public class PlayerStatsWithRequiredFilter {
      *
      * @return the date of the player session.
      */
-    @Temporal(grain = @TimeGrainDefinition(grain = TimeGrain.DAY, expression = DATE_FORMAT), timeZone = "UTC")
+    @Temporal(grains = { @TimeGrainDefinition(grain = TimeGrain.DAY, expression = DATE_FORMAT)}, timeZone = "UTC")
     public Date getRecordedDate() {
         return recordedDate;
     }
@@ -278,7 +280,7 @@ public class PlayerStatsWithRequiredFilter {
      *
      * @return the date of the player session.
      */
-    @Temporal(grain = @TimeGrainDefinition(grain = TimeGrain.DAY, expression = DATE_FORMAT), timeZone = "UTC")
+    @Temporal(grains = { @TimeGrainDefinition(grain = TimeGrain.DAY, expression = DATE_FORMAT)}, timeZone = "UTC")
     public Date getUpdatedDate() {
         return updatedDate;
     }

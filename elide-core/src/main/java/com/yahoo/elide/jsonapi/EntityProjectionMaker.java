@@ -10,6 +10,7 @@ import com.yahoo.elide.core.Path;
 import com.yahoo.elide.core.RequestScope;
 import com.yahoo.elide.core.dictionary.EntityDictionary;
 import com.yahoo.elide.core.exceptions.InvalidCollectionException;
+import com.yahoo.elide.core.exceptions.InvalidValueException;
 import com.yahoo.elide.core.filter.expression.FilterExpression;
 import com.yahoo.elide.core.pagination.PaginationImpl;
 import com.yahoo.elide.core.request.Attribute;
@@ -23,6 +24,8 @@ import com.yahoo.elide.generated.parsers.CoreBaseVisitor;
 import com.yahoo.elide.generated.parsers.CoreParser;
 import com.yahoo.elide.jsonapi.parser.JsonApiParser;
 import com.google.common.collect.Sets;
+
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import lombok.Builder;
 import lombok.Data;
@@ -34,7 +37,6 @@ import java.util.Set;
 import java.util.function.Function;
 import java.util.stream.Collectors;
 import java.util.stream.Stream;
-import javax.ws.rs.core.MultivaluedHashMap;
 import javax.ws.rs.core.MultivaluedMap;
 
 /**
@@ -62,7 +64,7 @@ public class EntityProjectionMaker
 
     public EntityProjectionMaker(EntityDictionary dictionary, RequestScope scope) {
         this.dictionary = dictionary;
-        this.queryParams = scope.getQueryParams().orElseGet(MultivaluedHashMap::new);
+        this.queryParams = scope.getQueryParams();
         sparseFields = RequestScope.parseSparseFields(queryParams);
         this.scope = scope;
     }
@@ -117,17 +119,13 @@ public class EntityProjectionMaker
     @Override
     public Function<Type<?>, NamedEntityProjection> visitRootCollectionLoadEntity(
             CoreParser.RootCollectionLoadEntityContext ctx) {
-        return (unused) -> {
-            return ctx.entity().accept(this).apply(null);
-        };
+        return unused -> ctx.entity().accept(this).apply(null);
     }
 
     @Override
     public Function<Type<?>, NamedEntityProjection> visitSubCollectionReadEntity(
             CoreParser.SubCollectionReadEntityContext ctx) {
-        return (parentClass) -> {
-            return ctx.entity().accept(this).apply(parentClass);
-        };
+        return parentClass -> ctx.entity().accept(this).apply(parentClass);
     }
 
     @Override
@@ -179,9 +177,8 @@ public class EntityProjectionMaker
 
         if (aggregate == null) {
             return nextResult;
-        } else {
-            return aggregate;
         }
+        return aggregate;
     }
 
     public EntityProjection visitIncludePath(Path path) {
@@ -328,11 +325,15 @@ public class EntityProjectionMaker
         Set<String> allAttributes = new LinkedHashSet<>(dictionary.getAttributes(entityClass));
 
         Set<String> sparseFieldsForEntity = sparseFields.get(dictionary.getJsonAliasFor(entityClass));
-        if (sparseFieldsForEntity == null || sparseFieldsForEntity.isEmpty()) {
+        if (CollectionUtils.isEmpty(sparseFieldsForEntity)) {
             sparseFieldsForEntity = allAttributes;
+        } else {
+            Set<String> allRelationships = new LinkedHashSet<>(dictionary.getRelationships(entityClass));
+            validateSparseFields(sparseFieldsForEntity, allAttributes, allRelationships, entityClass);
+            sparseFieldsForEntity = Sets.intersection(allAttributes, sparseFieldsForEntity);
         }
 
-        return Sets.intersection(allAttributes, sparseFieldsForEntity).stream()
+        return sparseFieldsForEntity.stream()
                 .map(attributeName -> Attribute.builder()
                     .name(attributeName)
                     .type(dictionary.getType(entityClass, attributeName))
@@ -344,11 +345,13 @@ public class EntityProjectionMaker
         Set<String> allRelationships = new LinkedHashSet<>(dictionary.getRelationships(entityClass));
         Set<String> sparseFieldsForEntity = sparseFields.get(dictionary.getJsonAliasFor(entityClass));
 
-        if (sparseFieldsForEntity == null || sparseFieldsForEntity.isEmpty()) {
+        if (CollectionUtils.isEmpty(sparseFieldsForEntity)) {
             sparseFieldsForEntity = allRelationships;
+        } else {
+            Set<String> allAttributes = new LinkedHashSet<>(dictionary.getAttributes(entityClass));
+            validateSparseFields(sparseFieldsForEntity, allAttributes, allRelationships, entityClass);
+            sparseFieldsForEntity = Sets.intersection(allRelationships, sparseFieldsForEntity);
         }
-
-        sparseFieldsForEntity = Sets.intersection(allRelationships, sparseFieldsForEntity);
 
         return sparseFieldsForEntity.stream()
                 .collect(Collectors.toMap(
@@ -363,6 +366,18 @@ public class EntityProjectionMaker
                                     .build();
                         }
                 ));
+    }
+
+    private void validateSparseFields(Set<String> sparseFieldsForEntity, Set<String> allAttributes,
+                    Set<String> allRelationships, Type<?> entityClass) {
+        String unknownSparseFields = sparseFieldsForEntity.stream()
+                        .filter(field -> !(allAttributes.contains(field) || allRelationships.contains(field)))
+                        .collect(Collectors.joining(", "));
+
+        if (!unknownSparseFields.isEmpty()) {
+            throw new InvalidValueException(String.format("%s does not contain the fields: [%s]",
+                            dictionary.getJsonAliasFor(entityClass), unknownSparseFields));
+        }
     }
 
     private Map<String, EntityProjection> getRequiredRelationships(Type<?> entityClass) {

@@ -209,6 +209,8 @@ public final class GraphQLDSL {
      * @param object  Object to be serialized
      *
      * @return a string
+     *
+     * @throws IllegalStateException
      */
     public static String toJson(Object object) {
         try {
@@ -280,7 +282,7 @@ public final class GraphQLDSL {
     }
 
     /**
-     * Constructs a named query
+     * Constructs a named query.
      *
      * @param name  Query name
      * @param variableDefinitions  Optional variables
@@ -433,8 +435,25 @@ public final class GraphQLDSL {
         return Field.scalarField(name);
     }
 
+    /**
+     * Creates an attribute field selection with arguments.
+     * @param name The name of the field.
+     * @param arguments The arguments.
+     * @return a field that represents an non-reltionship entity attribute
+     */
     public static Selection field(String name, Arguments arguments) {
         return new Field(null, name, arguments, null);
+    }
+
+    /**
+     * Creates an attribute field selection with arguments and an alias.
+     * @param name The name of the field.
+     * @param alias The alias name of the field.
+     * @param arguments The arguments.
+     * @return a field that represents an non-reltionship entity attribute
+     */
+    public static Selection field(String name, String alias, Arguments arguments) {
+        return new Field(alias, name, arguments, null);
     }
 
     /**
@@ -555,7 +574,7 @@ public final class GraphQLDSL {
     private static SelectionSet relayWrap(List<SelectionSet> selectionSet) {
         Edges edges = new Edges(
                 selectionSet.stream()
-                        .map(set -> new Node(set))
+                        .map(Node::new)
                         .collect(Collectors.toList())
         );
 

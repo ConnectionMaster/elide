@@ -10,13 +10,11 @@ import java.util.TimeZone;
 /**
  * Serde class for bidirectional conversion from TimeZone type to String.
  */
-@ElideTypeConverter(type = TimeZone.class, name = "TimeZone")
 public class TimeZoneSerde implements Serde<String, TimeZone> {
 
     @Override
     public TimeZone deserialize(String val) {
-        TimeZone timezone = TimeZone.getTimeZone(val);
-        return timezone;
+        return TimeZone.getTimeZone(val);
     }
 
     @Override

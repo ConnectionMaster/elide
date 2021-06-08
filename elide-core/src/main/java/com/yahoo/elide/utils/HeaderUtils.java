@@ -21,7 +21,7 @@ import javax.ws.rs.core.HttpHeaders;
 public class HeaderUtils {
 
     /**
-     * Resolve value of api version from request headers
+     * Resolve value of api version from request headers.
      * @param headers HttpHeaders
      * @return apiVersion
      */
@@ -34,12 +34,12 @@ public class HeaderUtils {
          return apiVersion;
      }
     /**
-     * Remove Authorization and Proxy Authorization headers from request headers
+     * Remove Authorization and Proxy Authorization headers from request headers.
      * @param headers HttpHeaders
      * @return requestHeaders
      */
      public static Map<String, List<String>> removeAuthHeaders(Map<String, List<String>> headers) {
-         Map<String, List<String>> requestHeaders = new HashMap<String, List<String>>(headers);
+         Map<String, List<String>> requestHeaders = new HashMap<>(headers);
          if (requestHeaders.get(HttpHeaders.AUTHORIZATION) != null) {
              requestHeaders.remove(HttpHeaders.AUTHORIZATION);
          }

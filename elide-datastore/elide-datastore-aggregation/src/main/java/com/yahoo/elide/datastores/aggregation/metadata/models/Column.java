@@ -7,6 +7,7 @@ package com.yahoo.elide.datastores.aggregation.metadata.models;
 
 import static com.yahoo.elide.datastores.aggregation.metadata.enums.ColumnType.FIELD;
 import static com.yahoo.elide.datastores.aggregation.metadata.enums.ColumnType.FORMULA;
+import com.yahoo.elide.annotation.Exclude;
 import com.yahoo.elide.annotation.Include;
 import com.yahoo.elide.annotation.ToOne;
 import com.yahoo.elide.core.dictionary.EntityDictionary;
@@ -19,23 +20,31 @@ import com.yahoo.elide.datastores.aggregation.annotation.MetricFormula;
 import com.yahoo.elide.datastores.aggregation.metadata.enums.ColumnType;
 import com.yahoo.elide.datastores.aggregation.metadata.enums.ValueSourceType;
 import com.yahoo.elide.datastores.aggregation.metadata.enums.ValueType;
+import com.yahoo.elide.datastores.aggregation.query.ColumnProjection;
+import com.yahoo.elide.modelconfig.model.Named;
+
+import lombok.AccessLevel;
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
+import lombok.Setter;
 import lombok.ToString;
 
 import java.util.Arrays;
-import java.util.HashSet;
+import java.util.LinkedHashSet;
 import java.util.Set;
+import java.util.stream.Collectors;
 import javax.persistence.Id;
+import javax.persistence.OneToMany;
+import javax.persistence.OneToOne;
 
 /**
  * Column is the super class of a field in a table, it can be either dimension or metric.
  */
-@Include(rootLevel = false, type = "column")
+@Include(rootLevel = false, name = "column")
 @Getter
 @EqualsAndHashCode
 @ToString
-public abstract class Column implements Versioned {
+public abstract class Column implements Versioned, Named {
 
     @Id
     private final String id;
@@ -65,7 +74,21 @@ public abstract class Column implements Versioned {
 
     private final Set<String> values;
 
-    private final String tableSource;
+    @OneToOne
+    @Setter
+    private TableSource tableSource = null;
+
+    @Exclude
+    private com.yahoo.elide.datastores.aggregation.annotation.TableSource tableSourceDefinition;
+
+    @OneToMany
+    @ToString.Exclude
+    @Getter(value = AccessLevel.NONE)
+    private final Set<ArgumentDefinition> arguments;
+
+    public Set<ArgumentDefinition> getArgumentDefinitions() {
+        return this.arguments;
+    }
 
     @ToString.Exclude
     private final Set<String> tags;
@@ -84,44 +107,53 @@ public abstract class Column implements Versioned {
                     : name;
             this.description = meta.description();
             this.category = meta.category();
-            this.values = new HashSet<>(Arrays.asList(meta.values()));
-            this.tags = new HashSet<>(Arrays.asList(meta.tags()));
-            this.tableSource = (meta.tableSource().trim().isEmpty()) ? null : meta.tableSource();
-            this.valueSourceType = getValueSourceType();
+            this.values = new LinkedHashSet<>(Arrays.asList(meta.values()));
+            this.tags = new LinkedHashSet<>(Arrays.asList(meta.tags()));
+            this.tableSourceDefinition = meta.tableSource();
+            this.valueSourceType = ValueSourceType.getValueSourceType(this.values, this.tableSourceDefinition);
             this.cardinality = meta.size();
         } else {
             this.friendlyName = name;
             this.description = null;
             this.category = null;
             this.values = null;
-            this.tags = new HashSet<>();
-            this.tableSource = null;
+            this.tags = new LinkedHashSet<>();
+            this.tableSourceDefinition = null;
             this.valueSourceType = ValueSourceType.NONE;
             this.cardinality = CardinalitySize.UNKNOWN;
         }
 
         if (dictionary.attributeOrRelationAnnotationExists(tableClass, fieldName, MetricFormula.class)) {
             columnType = FORMULA;
-            expression = dictionary
-                    .getAttributeOrRelationAnnotation(tableClass, MetricFormula.class, fieldName).value();
+            MetricFormula metricFormula = dictionary.getAttributeOrRelationAnnotation(tableClass, MetricFormula.class,
+                    fieldName);
+            this.expression = metricFormula.value();
+            this.arguments = Arrays.stream(metricFormula.arguments())
+                    .map(argument -> new ArgumentDefinition(getId(), argument))
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
         } else if (dictionary.attributeOrRelationAnnotationExists(tableClass, fieldName, DimensionFormula.class)) {
             columnType = FORMULA;
-            expression = dictionary
-                    .getAttributeOrRelationAnnotation(tableClass, DimensionFormula.class, fieldName).value();
+            DimensionFormula dimensionFormula = dictionary.getAttributeOrRelationAnnotation(tableClass,
+                    DimensionFormula.class, fieldName);
+            this.expression = dimensionFormula.value();
+            this.arguments = Arrays.stream(dimensionFormula.arguments())
+                    .map(argument -> new ArgumentDefinition(getId(), argument))
+                    .collect(Collectors.toCollection(LinkedHashSet::new));
         } else {
             columnType = FIELD;
-            expression = dictionary.getAnnotatedColumnName(tableClass, fieldName);
+            expression = "{{$" + dictionary.getAnnotatedColumnName(tableClass, fieldName) + "}}";
+            this.arguments = new LinkedHashSet<>();
         }
 
         this.valueType = getValueType(tableClass, fieldName, dictionary);
 
-        if (valueType == null) {
+        if (valueType == ValueType.UNKNOWN) {
             throw new IllegalArgumentException("Unknown data type for " + this.id);
         }
     }
 
     /**
-     * Construct a column name as meta data
+     * Construct a column name as meta data.
      *
      * @param tableClass table class
      * @param fieldName field name
@@ -133,7 +165,7 @@ public abstract class Column implements Versioned {
     }
 
     /**
-     * Resolve the value type of a field
+     * Resolve the value type of a field.
      *
      * @param tableClass table class
      * @param fieldName field name
@@ -142,31 +174,38 @@ public abstract class Column implements Versioned {
      */
     public static ValueType getValueType(Type<?> tableClass, String fieldName, EntityDictionary dictionary) {
         if (dictionary.isRelation(tableClass, fieldName)) {
-            return ValueType.RELATIONSHIP;
-        } else {
-            Type<?> fieldClass = dictionary.getType(tableClass, fieldName);
-
-            if (fieldName.equals(dictionary.getIdFieldName(tableClass))) {
-                return ValueType.ID;
-            } else if (ClassType.DATE_TYPE.isAssignableFrom(fieldClass)) {
-                return ValueType.TIME;
-            } else {
-                return ValueType.getScalarType(fieldClass);
-            }
+            return ValueType.UNKNOWN;
         }
+        Type<?> fieldClass = dictionary.getType(tableClass, fieldName);
+
+        if (fieldName.equals(dictionary.getIdFieldName(tableClass))) {
+            return ValueType.ID;
+        }
+
+        if (ClassType.DATE_TYPE.isAssignableFrom(fieldClass)) {
+            return ValueType.TIME;
+        }
+
+        return ValueType.getScalarType(fieldClass);
     }
 
-    private ValueSourceType getValueSourceType() {
-        if (values != null && !values.isEmpty()) {
-            return ValueSourceType.ENUM;
-        } else if (tableSource != null) {
-            return ValueSourceType.TABLE;
-        }
-        return ValueSourceType.NONE;
+    public ColumnProjection toProjection() {
+        return table.toQueryable().getColumnProjection(getName());
     }
 
     @Override
     public String getVersion() {
         return table.getVersion();
+    }
+
+    public boolean hasArgumentDefinition(String argName) {
+        return hasName(this.arguments, argName);
+    }
+
+    public ArgumentDefinition getArgumentDefinition(String argName) {
+        return this.arguments.stream()
+                        .filter(arg -> arg.getName().equals(argName))
+                        .findFirst()
+                        .orElse(null);
     }
 }

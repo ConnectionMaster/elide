@@ -11,21 +11,32 @@ import static com.yahoo.elide.annotation.LifeCycleHookBinding.TransactionPhase.P
 import static com.yahoo.elide.annotation.LifeCycleHookBinding.TransactionPhase.PRESECURITY;
 import com.yahoo.elide.Elide;
 import com.yahoo.elide.ElideSettings;
+import com.yahoo.elide.async.export.formatter.CSVExportFormatter;
+import com.yahoo.elide.async.export.formatter.JSONExportFormatter;
+import com.yahoo.elide.async.export.formatter.TableExportFormatter;
 import com.yahoo.elide.async.hooks.AsyncQueryHook;
+import com.yahoo.elide.async.hooks.TableExportHook;
+import com.yahoo.elide.async.models.AsyncAPI;
 import com.yahoo.elide.async.models.AsyncQuery;
+import com.yahoo.elide.async.models.ResultType;
+import com.yahoo.elide.async.models.TableExport;
+import com.yahoo.elide.async.resources.ExportApiEndpoint.ExportApiProperties;
 import com.yahoo.elide.async.service.AsyncCleanerService;
 import com.yahoo.elide.async.service.AsyncExecutorService;
 import com.yahoo.elide.async.service.dao.AsyncAPIDAO;
 import com.yahoo.elide.async.service.dao.DefaultAsyncAPIDAO;
+import com.yahoo.elide.async.service.storageengine.FileResultStorageEngine;
 import com.yahoo.elide.async.service.storageengine.ResultStorageEngine;
 import com.yahoo.elide.core.datastore.DataStore;
 import com.yahoo.elide.core.dictionary.EntityDictionary;
+import com.yahoo.elide.core.exceptions.InvalidOperationException;
+import com.yahoo.elide.core.security.RequestScope;
 import com.yahoo.elide.datastores.aggregation.AggregationDataStore;
 import com.yahoo.elide.datastores.aggregation.QueryEngine;
 import com.yahoo.elide.datastores.aggregation.metadata.MetaDataStore;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.ConnectionDetails;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.dialects.SQLDialectFactory;
-import com.yahoo.elide.modelconfig.compile.ElideDynamicEntityCompiler;
+import com.yahoo.elide.modelconfig.DynamicConfiguration;
 import com.yahoo.elide.standalone.Util;
 import com.yahoo.elide.swagger.resources.DocEndpoint;
 import com.codahale.metrics.MetricRegistry;
@@ -36,9 +47,13 @@ import org.glassfish.jersey.internal.inject.AbstractBinder;
 import org.glassfish.jersey.server.ResourceConfig;
 import lombok.extern.slf4j.Slf4j;
 
+import java.io.IOException;
+import java.util.HashMap;
 import java.util.List;
+import java.util.Map;
 import java.util.Optional;
 import java.util.Set;
+import java.util.concurrent.ExecutorService;
 import java.util.function.Consumer;
 import javax.inject.Inject;
 import javax.persistence.EntityManagerFactory;
@@ -55,6 +70,8 @@ public class ElideResourceConfig extends ResourceConfig {
     private final ServiceLocator injector;
 
     public static final String ELIDE_STANDALONE_SETTINGS_ATTR = "elideStandaloneSettings";
+    public static final String ASYNC_EXECUTOR_ATTR = "asyncExecutor";
+    public static final String ASYNC_UPDATER_ATTR = "asyncUpdater";
 
     private static MetricRegistry metricRegistry = null;
     private static HealthCheckRegistry healthCheckRegistry = null;
@@ -68,35 +85,41 @@ public class ElideResourceConfig extends ResourceConfig {
     @Inject
     public ElideResourceConfig(ServiceLocator injector, @Context ServletContext servletContext) {
         this.injector = injector;
-
         settings = (ElideStandaloneSettings) servletContext.getAttribute(ELIDE_STANDALONE_SETTINGS_ATTR);
-
-        Optional<ElideDynamicEntityCompiler> optionalCompiler = settings.getDynamicCompiler();
 
         // Bind things that should be injectable to the Settings class
         register(new AbstractBinder() {
             @Override
             protected void configure() {
                 ElideStandaloneAsyncSettings asyncProperties = settings.getAsyncProperties();
-                bind(Util.combineModelEntities(optionalCompiler, settings.getModelPackageName(),
+                bind(Util.combineModelEntities(settings.getModelPackageName(),
                         asyncProperties.enabled())).to(Set.class).named("elideAllModels");
             }
         });
+
+        Optional<DynamicConfiguration> dynamicConfiguration;
+        try {
+            dynamicConfiguration = settings.getDynamicConfiguration();
+        } catch (IOException e) {
+            throw new IllegalStateException(e);
+        }
 
         // Bind to injector
         register(new AbstractBinder() {
             @Override
             protected void configure() {
-                ElideStandaloneAsyncSettings asyncProperties = settings.getAsyncProperties();
+                ElideStandaloneAsyncSettings asyncProperties = settings.getAsyncProperties() == null
+                        ? new ElideStandaloneAsyncSettings() { } : settings.getAsyncProperties();
                 EntityManagerFactory entityManagerFactory = Util.getEntityManagerFactory(settings.getModelPackageName(),
-                        asyncProperties.enabled(), optionalCompiler, settings.getDatabaseProperties());
+                        asyncProperties.enabled(), settings.getDatabaseProperties());
 
-                EntityDictionary dictionary = settings.getEntityDictionary(injector, optionalCompiler);
+                EntityDictionary dictionary = settings.getEntityDictionary(injector, dynamicConfiguration,
+                        settings.getEntitiesToExclude());
 
                 DataStore dataStore;
 
                 if (settings.getAnalyticProperties().enableAggregationDataStore()) {
-                    MetaDataStore metaDataStore = settings.getMetaDataStore(optionalCompiler);
+                    MetaDataStore metaDataStore = settings.getMetaDataStore(dynamicConfiguration);
                     if (metaDataStore == null) {
                         throw new IllegalStateException("Aggregation Datastore is enabled but metaDataStore is null");
                     }
@@ -106,10 +129,9 @@ public class ElideResourceConfig extends ResourceConfig {
                                     SQLDialectFactory.getDialect(settings.getAnalyticProperties().getDefaultDialect()));
 
                     QueryEngine queryEngine = settings.getQueryEngine(metaDataStore, defaultConnectionDetails,
-                                    optionalCompiler, settings.getDataSourceConfiguration(),
+                                    dynamicConfiguration, settings.getDataSourceConfiguration(),
                                     settings.getAnalyticProperties().getDBPasswordExtractor());
-                    AggregationDataStore aggregationDataStore =
-                                    settings.getAggregationDataStore(queryEngine, optionalCompiler);
+                    AggregationDataStore aggregationDataStore = settings.getAggregationDataStore(queryEngine);
                     if (aggregationDataStore == null) {
                         throw new IllegalStateException(
                                         "Aggregation Datastore is enabled but aggregationDataStore is null");
@@ -133,21 +155,47 @@ public class ElideResourceConfig extends ResourceConfig {
 
                 // Binding async service
                 if (asyncProperties.enabled()) {
-
                     AsyncAPIDAO asyncAPIDao = asyncProperties.getAPIDAO();
                     if (asyncAPIDao == null) {
                         asyncAPIDao = new DefaultAsyncAPIDAO(elide.getElideSettings(), elide.getDataStore());
                     }
                     bind(asyncAPIDao).to(AsyncAPIDAO.class);
 
-                    // TODO: If null, initialize with FileResultStorageEngine
-                    ResultStorageEngine resultStorageEngine = asyncProperties.getResultStorageEngine();
-                    AsyncExecutorService.init(elide, asyncProperties.getThreadSize(), asyncAPIDao,
-                            resultStorageEngine);
-                    bind(AsyncExecutorService.getInstance()).to(AsyncExecutorService.class);
+                    ExecutorService executor = (ExecutorService) servletContext.getAttribute(ASYNC_EXECUTOR_ATTR);
+                    ExecutorService updater = (ExecutorService) servletContext.getAttribute(ASYNC_UPDATER_ATTR);
+                    AsyncExecutorService asyncExecutorService =
+                                    new AsyncExecutorService(elide, executor, updater, asyncAPIDao);
+                    bind(asyncExecutorService).to(AsyncExecutorService.class);
+
+                    if (asyncProperties.enableExport()) {
+                        ExportApiProperties exportApiProperties = new ExportApiProperties(
+                                asyncProperties.getExportAsyncResponseExecutor(),
+                                asyncProperties.getExportAsyncResponseTimeoutSeconds());
+                        bind(exportApiProperties).to(ExportApiProperties.class).named("exportApiProperties");
+
+                        ResultStorageEngine resultStorageEngine = asyncProperties.getResultStorageEngine();
+                        if (resultStorageEngine == null) {
+                            resultStorageEngine = new FileResultStorageEngine(asyncProperties.getStorageDestination());
+                        }
+                        bind(resultStorageEngine).to(ResultStorageEngine.class).named("resultStorageEngine");
+
+                        // Initialize the Formatters.
+                        Map<ResultType, TableExportFormatter> supportedFormatters = new HashMap<>();
+                        supportedFormatters.put(ResultType.CSV, new CSVExportFormatter(elide,
+                                asyncProperties.skipCSVHeader()));
+                        supportedFormatters.put(ResultType.JSON, new JSONExportFormatter(elide));
+
+                        // Binding TableExport LifeCycleHook
+                        TableExportHook tableExportHook = getTableExportHook(asyncExecutorService,
+                                asyncProperties, supportedFormatters, resultStorageEngine);
+                        dictionary.bindTrigger(TableExport.class, READ, PRESECURITY, tableExportHook, false);
+                        dictionary.bindTrigger(TableExport.class, CREATE, POSTCOMMIT, tableExportHook, false);
+                        dictionary.bindTrigger(TableExport.class, CREATE, PRESECURITY, tableExportHook, false);
+
+                    }
 
                     // Binding AsyncQuery LifeCycleHook
-                    AsyncQueryHook asyncQueryHook = new AsyncQueryHook(AsyncExecutorService.getInstance(),
+                    AsyncQueryHook asyncQueryHook = new AsyncQueryHook(asyncExecutorService,
                             asyncProperties.getMaxAsyncAfterSeconds());
 
                     dictionary.bindTrigger(AsyncQuery.class, READ, PRESECURITY, asyncQueryHook, false);
@@ -215,5 +263,28 @@ public class ElideResourceConfig extends ResourceConfig {
         }
 
         return healthCheckRegistry;
+    }
+
+    // TODO Remove this method when ElideSettings has all the settings.
+    // Then the check can be done in TableExportHook.
+    // Trying to avoid adding too many individual properties to ElideSettings for now.
+    // https://github.com/yahoo/elide/issues/1803
+    private TableExportHook getTableExportHook(AsyncExecutorService asyncExecutorService,
+            ElideStandaloneAsyncSettings asyncProperties, Map<ResultType, TableExportFormatter> supportedFormatters,
+            ResultStorageEngine engine) {
+        TableExportHook tableExportHook = null;
+        if (asyncProperties.enableExport()) {
+            tableExportHook = new TableExportHook(asyncExecutorService, asyncProperties.getMaxAsyncAfterSeconds(),
+                    supportedFormatters, engine);
+        } else {
+            tableExportHook = new TableExportHook(asyncExecutorService, asyncProperties.getMaxAsyncAfterSeconds(),
+                    supportedFormatters, engine) {
+                @Override
+                public void validateOptions(AsyncAPI export, RequestScope requestScope) {
+                    throw new InvalidOperationException("TableExport is not supported.");
+                }
+            };
+        }
+        return tableExportHook;
     }
 }

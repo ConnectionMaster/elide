@@ -1,6 +1,57 @@
 {
     "$schema": "https://json-schema.org/draft-04/schema#",
     "definitions": {
+        "argument" : {
+            "title" : "Arguments",
+            "description" : "Arguments are supported for table, measures and dimensions.",
+            "type" : "object",
+            "properties": {
+                "name": {
+                    "title": "Argument name",
+                    "description": "Name must start with an alphabetic character and can include alaphabets, numbers and '_' only.",
+                    "type": "string",
+                    "format": "elideArgumentName"
+                },
+                "description": {
+                    "title": "Argument description",
+                    "description": "A long description for this Argument.",
+                    "type": "string"
+                },
+                "type": {
+                    "title": "Argument type",
+                    "description": "Must be one of Integer, Decimal, Money, Text, Coordinate, Boolean",
+                    "type": "string",
+                    "format": "elideFieldType"
+                },
+                "values": {
+                    "title": "Argument values",
+                    "description": "An array of valid string values for this Argument",
+                    "type": "array",
+                    "uniqueItems": true,
+                    "items": {
+                        "type": "string"
+                    }
+                },
+                "tableSource": {
+                    "$ref": "#/definitions/tableSource"
+                },
+                "default": {
+                    "title": "Default argument value",
+                    "description": "Default value for this argument.",
+                    "type": [
+                        "string",
+                        "number",
+                        "boolean"
+                    ]
+                }
+            },
+            "required": [
+                "name",
+                "type"
+            ],
+            "validateArgumentProperties": true,
+            "additionalProperties": false
+        },
         "join": {
             "title": "Join",
             "description": "Joins describe the SQL expression necessary to join two physical tables. Joins can be used when defining dimension columns that reference other tables.",
@@ -11,6 +62,13 @@
                     "description": "The name of the join relationship.",
                     "type": "string",
                     "format": "elideFieldName"
+                },
+                "namespace": {
+                        "title": "Join Namespace",
+                        "description": "Namespace for the Join.",
+                        "type": "string",
+                        "format": "elideNamespaceName",
+                        "default": "default"
                 },
                 "to": {
                     "title": "Join table name",
@@ -39,6 +97,47 @@
             "required": [
                 "name",
                 "to"
+            ],
+            "additionalProperties": false
+        },
+        "tableSource": {
+            "title": "Table Source",
+            "description": "Provides information about where a column or argument values can be found.",
+            "type": "object",
+            "properties": {
+                "table": {
+                    "title": "Source table",
+                    "description": "The source table that contains the colum or argument values.",
+                    "type": "string",
+                    "format": "elideName"
+                },
+                "namespace": {
+                    "title": "Source table namespace",
+                    "description": "Namespace for the source table.",
+                    "type": "string",
+                    "format": "elideNamespaceName",
+                    "default": "default"
+                },
+                "column": {
+                    "title": "Primary source table column name",
+                    "description": "The column that provides a unique list of values for the given column or argument",
+                    "type": "string",
+                    "format": "elideFieldName"
+                },
+                "suggestionColumns": {
+                    "title": "Secondary search columns",
+                    "description": "Secondary columns that can be searched to locate the primary column(s)",
+                    "type": "array",
+                    "uniqueItems": true,
+                    "items": {
+                        "type": "string",
+                        "format": "elideFieldName"
+                    }
+                }
+            },
+            "required": [
+                "table",
+                "column"
             ],
             "additionalProperties": false
         },
@@ -85,9 +184,9 @@
                     "description": "The definition of the metric",
                     "type": "string"
                 },
-                "queryPlanResolver": {
-                    "title": "query plan resolver class",
-                    "description": "The JVM function class which maps a metric to a query plan",
+                "maker": {
+                    "title": "Metric Projection Maker",
+                    "description": "Registers a custom function to create a projection for this metric",
                     "type": "string",
                     "format": "javaClassNameWithExt"
                 },
@@ -104,6 +203,14 @@
                     "uniqueItems": true,
                     "items": {
                         "type": "string"
+                    }
+                },
+                "arguments": {
+                    "title": "Measure arguments",
+                    "description": "An array of supported arguments for measure",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/argument"
                     }
                 }
             },
@@ -171,6 +278,14 @@
                     "items": {
                         "type": "string"
                     }
+                },
+                "arguments": {
+                    "title": "Dimension arguments",
+                    "description": "An array of supported arguments for dimensions",
+                    "type": "array",
+                    "items": {
+                        "$ref": "#/definitions/argument"
+                    }
                 }
             }
         },
@@ -200,9 +315,7 @@
                             }
                         },
                         "tableSource": {
-                            "title": "Table stores dimension values",
-                            "description": "Table and column name where to find the values : tableName.columnName",
-                            "type": "string"
+                            "$ref": "#/definitions/tableSource"
                         }
                     }
                 }
@@ -230,24 +343,30 @@
                             "type": "string",
                             "format": "elideTimeFieldType"
                         },
-                        "grain": {
-                            "title": "Grains",
-                            "description": "Grains can have SQL expressions that can substitute column with the dimension definition expression",
-                            "type": "object",
-                            "properties": {
-                                "type": {
-                                    "title": "Time granularity",
-                                    "description": "Indicates grain time granularity",
-                                    "type": "string",
-                                    "format": "elideGrainType"
+                        "grains" : {
+                            "title" : "Time Dimension grains",
+                            "description" : "Time Dimension granularity and Sqls",
+                            "type" : "array",
+                            "items" : {
+                                "title": "Grains",
+                                "description": "Grains can have SQL expressions that can substitute column with the dimension definition expression",
+                                "type": "object",
+                                "properties": {
+                                    "type": {
+                                        "title": "Time granularity",
+                                        "description": "Indicates grain time granularity",
+                                        "type": "string",
+                                        "format": "elideGrainType"
+                                    },
+                                    "sql": {
+                                        "title": "Grain SQL",
+                                        "description": "Grain SQL query",
+                                        "type": "string"
+                                    }
                                 },
-                                "sql": {
-                                    "title": "Grain SQL",
-                                    "description": "Grain SQL query",
-                                    "type": "string"
-                                }
+                                "additionalProperties": false
                             },
-                            "additionalProperties": false
+                            "default" : []
                         }
                     }
                 }
@@ -321,6 +440,22 @@
                         "type": "string",
                         "default": "Prefab.Role.All"
                     },
+                    "namespace": {
+                        "title": "Table Namespace",
+                        "description": "Namespace for the table.",
+                        "type": "string",
+                        "format": "elideNamespaceName",
+                        "default": "default"
+                    },
+                    "hints": {
+                        "title": "Optimizer Hints",
+                        "description": "An array of hint names to control the optimizer",
+                        "type": "array",
+                        "uniqueItems": true,
+                        "items": {
+                            "type": "string"
+                        }
+                    },
                     "joins": {
                         "title": "Table joins",
                         "description": "Describes SQL joins to other tables for column references.",
@@ -359,6 +494,14 @@
                         "uniqueItems": true,
                         "items": {
                             "type": "string"
+                        }
+                    },
+                    "arguments": {
+                        "title": "Table arguments",
+                        "description": "An array of supported arguments for tables.",
+                        "type": "array",
+                        "items": {
+                            "$ref": "#/definitions/argument"
                         }
                     }
                 },

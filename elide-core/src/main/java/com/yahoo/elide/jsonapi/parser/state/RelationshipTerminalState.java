@@ -27,8 +27,7 @@ import org.apache.commons.lang3.tuple.Pair;
 import java.util.ArrayList;
 import java.util.Collection;
 import java.util.Map;
-import java.util.Optional;
-import java.util.function.BiFunction;
+import java.util.function.BiPredicate;
 import java.util.function.Supplier;
 import javax.ws.rs.core.MultivaluedMap;
 
@@ -57,12 +56,11 @@ public class RelationshipTerminalState extends BaseState {
         JsonApiDocument doc = new JsonApiDocument();
         RequestScope requestScope = state.getRequestScope();
         JsonApiMapper mapper = requestScope.getMapper();
-        Optional<MultivaluedMap<String, String>> queryParams = requestScope.getQueryParams();
+        MultivaluedMap<String, String> queryParams = requestScope.getQueryParams();
 
         Map<String, Relationship> relationships = record.toResource(parentProjection).getRelationships();
-        Relationship relationship = null;
-        if (relationships != null) {
-            relationship = relationships.get(relationshipName);
+        if (relationships != null && relationships.containsKey(relationshipName)) {
+            Relationship relationship = relationships.get(relationshipName);
 
             // Handle valid relationship
 
@@ -108,9 +106,9 @@ public class RelationshipTerminalState extends BaseState {
      * to the relationship. http://jsonapi.org/format/#crud-updating-relationship-responses
      */
     private Supplier<Pair<Integer, JsonNode>> handleRequest(StateContext state,
-                                                            BiFunction<Data<Resource>, RequestScope, Boolean> handler) {
+                                                            BiPredicate<Data<Resource>, RequestScope> handler) {
         Data<Resource> data = state.getJsonApiDocument().getData();
-        handler.apply(data, state.getRequestScope());
+        handler.test(data, state.getRequestScope());
         // TODO: figure out if we've made modifications that differ from those requested by client
         return () -> Pair.of(HttpStatus.SC_NO_CONTENT, null);
     }

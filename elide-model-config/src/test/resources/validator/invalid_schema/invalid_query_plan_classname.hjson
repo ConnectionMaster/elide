@@ -34,7 +34,7 @@
           type : INTEGER
           description : very awesome score
           definition: 'MAX({{score}})'
-          queryPlanResolver: 'a.b'
+          maker: 'a.b'
           tags: ['PUBLIC']
           }
       ]
@@ -51,13 +51,13 @@
            name : createdOn
            type : TIME
            definition : '{{create_on}}'
-           grain:
-            {
+           grains:
+            [{
              type : DAY
              sql :  '''
-             PARSEDATETIME(FORMATDATETIME(${column}, 'yyyy-MM-dd'), 'yyyy-MM-dd')
+             PARSEDATETIME(FORMATDATETIME({{$$column.expr}}, 'yyyy-MM-dd'), 'yyyy-MM-dd')
              '''
-            }
+            }]
          }
       ]
   }]

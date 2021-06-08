@@ -46,7 +46,9 @@ import example.Publisher;
 import example.Right;
 import example.UpdateAndCreate;
 import example.nontransferable.ContainerWithPackageShare;
+import example.nontransferable.NoTransferBiDirectional;
 import example.nontransferable.ShareableWithPackageShare;
+import example.nontransferable.StrictNoTransfer;
 import example.nontransferable.Untransferable;
 import io.reactivex.Observable;
 import lombok.AllArgsConstructor;
@@ -60,7 +62,8 @@ import java.util.List;
 import java.util.Optional;
 import java.util.Set;
 import java.util.UUID;
-import java.util.function.Function;
+import java.util.function.Predicate;
+
 import javax.persistence.Entity;
 import javax.persistence.Id;
 import javax.persistence.ManyToMany;
@@ -100,6 +103,8 @@ public class PersistenceResourceTestSetup extends PersistentResource {
         dictionary.bindEntity(ComputedBean.class);
         dictionary.bindEntity(ContainerWithPackageShare.class);
         dictionary.bindEntity(ShareableWithPackageShare.class);
+        dictionary.bindEntity(NoTransferBiDirectional.class);
+        dictionary.bindEntity(StrictNoTransfer.class);
         dictionary.bindEntity(Untransferable.class);
         return dictionary;
     }
@@ -185,17 +190,17 @@ public class PersistenceResourceTestSetup extends PersistentResource {
     /* ChangeSpec-specific test elements */
     @Entity
     @Include(rootLevel = false)
-    @CreatePermission(expression = "allow all")
-    @ReadPermission(expression = "allow all")
+    @CreatePermission(expression = "Prefab.Role.All")
+    @ReadPermission(expression = "Prefab.Role.All")
     @UpdatePermission(expression = "Prefab.Role.None")
-    @DeletePermission(expression = "allow all")
+    @DeletePermission(expression = "Prefab.Role.All")
     public static final class ChangeSpecModel {
         @Id
         public long id;
 
         @ReadPermission(expression = "Prefab.Role.None")
         @UpdatePermission(expression = "Prefab.Role.None")
-        public Function<ChangeSpec, Boolean> checkFunction;
+        public Predicate<ChangeSpec> checkFunction;
 
         @UpdatePermission(expression = "changeSpecNonCollection")
         public String testAttr;
@@ -211,7 +216,7 @@ public class PersistenceResourceTestSetup extends PersistentResource {
         @UpdatePermission(expression = "changeSpecCollection")
         public List<Child> otherKids;
 
-        public ChangeSpecModel(final Function<ChangeSpec, Boolean> checkFunction) {
+        public ChangeSpecModel(final Predicate<ChangeSpec> checkFunction) {
             this.checkFunction = checkFunction;
         }
     }
@@ -220,10 +225,10 @@ public class PersistenceResourceTestSetup extends PersistentResource {
     @Include(rootLevel = false)
     @EqualsAndHashCode
     @AllArgsConstructor
-    @CreatePermission(expression = "allow all")
-    @ReadPermission(expression = "allow all")
-    @UpdatePermission(expression = "allow all")
-    @DeletePermission(expression = "allow all")
+    @CreatePermission(expression = "Prefab.Role.All")
+    @ReadPermission(expression = "Prefab.Role.All")
+    @UpdatePermission(expression = "Prefab.Role.All")
+    @DeletePermission(expression = "Prefab.Role.All")
     public static final class ChangeSpecChild {
         @Id
         public long id;
@@ -238,7 +243,7 @@ public class PersistenceResourceTestSetup extends PersistentResource {
                 if (!(spec.getModified() instanceof Collection)) {
                     return false;
                 }
-                return ((ChangeSpecModel) object).checkFunction.apply(spec);
+                return ((ChangeSpecModel) object).checkFunction.test(spec);
             }
             throw new IllegalStateException("Something is terribly wrong :(");
         }
@@ -248,10 +253,9 @@ public class PersistenceResourceTestSetup extends PersistentResource {
 
         @Override
         public boolean ok(Object object, com.yahoo.elide.core.security.RequestScope requestScope, Optional<ChangeSpec> changeSpec) {
-            if (changeSpec.isPresent() && (object instanceof ChangeSpecModel)) {
-                return ((ChangeSpecModel) object).checkFunction.apply(changeSpec.get());
-            }
-            throw new IllegalStateException("Something is terribly wrong :(");
+            return changeSpec.filter(c -> object instanceof ChangeSpecModel)
+                    .map(c -> ((ChangeSpecModel) object).checkFunction.test(c))
+                    .orElseThrow(() -> new IllegalStateException("Something is terribly wrong :("));
         }
     }
 

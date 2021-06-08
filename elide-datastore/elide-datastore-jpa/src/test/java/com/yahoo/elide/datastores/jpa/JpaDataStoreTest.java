@@ -6,22 +6,24 @@
 
 package com.yahoo.elide.datastores.jpa;
 
-import static com.yahoo.elide.core.utils.TypeHelper.getClassType;
 import static org.junit.jupiter.api.Assertions.assertNotNull;
 import static org.mockito.Mockito.mock;
 import static org.mockito.Mockito.when;
 import com.yahoo.elide.annotation.Include;
+import com.yahoo.elide.core.Path;
 import com.yahoo.elide.core.annotations.JPQLFilterFragment;
 import com.yahoo.elide.core.dictionary.EntityDictionary;
 import com.yahoo.elide.core.filter.FilterTranslator;
 import com.yahoo.elide.core.filter.JPQLPredicateGenerator;
 import com.yahoo.elide.core.filter.Operator;
 import com.yahoo.elide.core.filter.predicates.FilterPredicate;
+import com.yahoo.elide.core.type.ClassType;
+
 import com.google.common.collect.Sets;
 import org.junit.jupiter.api.Test;
 
 import java.util.HashMap;
-import java.util.List;
+import java.util.function.Function;
 import javax.persistence.Entity;
 import javax.persistence.EntityManager;
 import javax.persistence.Id;
@@ -31,7 +33,7 @@ import javax.persistence.metamodel.Metamodel;
 public class JpaDataStoreTest {
     public static class TestGenerator implements JPQLPredicateGenerator {
         @Override
-        public String generate(String columnAlias, List<FilterPredicate.FilterParameter> parameters) {
+        public String generate(FilterPredicate predicate, Function<Path, String> parameters) {
             return "FOO()";
         }
     }
@@ -58,16 +60,16 @@ public class JpaDataStoreTest {
         EntityManager managerMock = mock(EntityManager.class);
         when(managerMock.getMetamodel()).thenReturn(mockModel);
 
-        JpaDataStore store = new JpaDataStore(() -> { return managerMock; }, (unused) -> { return null; });
+        JpaDataStore store = new JpaDataStore(() -> managerMock, unused -> null);
         EntityDictionary dictionary = new EntityDictionary(new HashMap<>());
 
 
         try {
             store.populateEntityDictionary(dictionary);
 
-            assertNotNull(FilterTranslator.lookupJPQLGenerator(Operator.IN, getClassType(Test.class), "name"));
+            assertNotNull(FilterTranslator.lookupJPQLGenerator(Operator.IN, ClassType.of(Test.class), "name"));
         } finally {
-            FilterTranslator.registerJPQLGenerator(Operator.IN, getClassType(Test.class), "name", null);
+            FilterTranslator.registerJPQLGenerator(Operator.IN, ClassType.of(Test.class), "name", null);
         }
     }
 
@@ -89,10 +91,10 @@ public class JpaDataStoreTest {
         EntityManager managerMock = mock(EntityManager.class);
         when(managerMock.getMetamodel()).thenReturn(mockModel);
 
-        JpaDataStore store = new JpaDataStore(() -> { return managerMock; }, (unused) -> { return null; }, getClassType(Test.class));
+        JpaDataStore store = new JpaDataStore(() -> managerMock, unused -> null, ClassType.of(Test.class));
         EntityDictionary dictionary = new EntityDictionary(new HashMap<>());
         store.populateEntityDictionary(dictionary);
 
-        assertNotNull(dictionary.lookupBoundClass(getClassType(Test.class)));
+        assertNotNull(dictionary.lookupBoundClass(ClassType.of(Test.class)));
     }
 }

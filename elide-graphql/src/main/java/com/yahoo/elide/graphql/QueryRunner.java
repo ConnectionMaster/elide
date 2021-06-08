@@ -43,6 +43,8 @@ import java.util.UUID;
 import java.util.function.Function;
 import java.util.stream.Stream;
 import java.util.stream.StreamSupport;
+import javax.validation.ConstraintViolation;
+import javax.validation.ConstraintViolationException;
 import javax.ws.rs.WebApplicationException;
 import javax.ws.rs.core.Response;
 
@@ -100,7 +102,7 @@ public class QueryRunner {
      * @return is a mutation.
      */
     public static boolean isMutation(String query) {
-        return query != null ? query.trim().startsWith(MUTATION) : false;
+        return query != null && query.trim().startsWith(MUTATION);
     }
 
     /**
@@ -269,12 +271,9 @@ public class QueryRunner {
             requestScope.getPermissionExecutor().executeCommitChecks();
             if (isMutation(query)) {
                 if (!result.getErrors().isEmpty()) {
-                    HashMap<String, Object> abortedResponseObject = new HashMap<String, Object>() {
-                        {
-                            put("errors", result.getErrors());
-                            put("data", null);
-                        }
-                    };
+                    HashMap<String, Object> abortedResponseObject = new HashMap<>();
+                    abortedResponseObject.put("errors", result.getErrors());
+                    abortedResponseObject.put("data", null);
                     // Do not commit. Throw OK response to process tx.close correctly.
                     throw new WebApplicationException(
                             Response.ok(mapper.writeValueAsString(abortedResponseObject)).build());
@@ -289,7 +288,7 @@ public class QueryRunner {
             requestScope.runQueuedPostCommitTriggers();
 
             if (log.isTraceEnabled()) {
-                requestScope.getPermissionExecutor().printCheckStats();
+                requestScope.getPermissionExecutor().logCheckStats();
             }
 
             return ElideResponse.builder().responseCode(HttpStatus.SC_OK).body(mapper.writeValueAsString(result))
@@ -338,6 +337,24 @@ public class QueryRunner {
                     return e.toString();
                 }
             }, isVerbose);
+        } catch (ConstraintViolationException e) {
+            log.debug("Constraint violation exception caught", e);
+            String message = "Constraint violation";
+            final ErrorObjects.ErrorObjectsBuilder errorObjectsBuilder = ErrorObjects.builder();
+            for (ConstraintViolation<?> constraintViolation : e.getConstraintViolations()) {
+                errorObjectsBuilder.addError()
+                        .withDetail(constraintViolation.getMessage());
+                final String propertyPathString = constraintViolation.getPropertyPath().toString();
+                if (!propertyPathString.isEmpty()) {
+                    Map<String, Object> source = new HashMap<>(1);
+                    source.put("property", propertyPathString);
+                    errorObjectsBuilder.with("source", source);
+                }
+            }
+            return buildErrorResponse(elide,
+                    new CustomErrorException(HttpStatus.SC_BAD_REQUEST, message, errorObjectsBuilder.build()),
+                    isVerbose
+            );
         } catch (Exception | Error e) {
             if (e instanceof InterruptedException) {
                 log.debug("Request Thread interrupted.", e);

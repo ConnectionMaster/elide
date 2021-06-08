@@ -66,11 +66,13 @@ public abstract class AsyncAPIHook<T extends AsyncAPI> implements LifeCycleHook<
             //ReadPreSecurityHook - Those hooks get evaluated in line with the request processing.
             executeAsync(query, queryWorker);
             return;
-        } else if (operation.equals(CREATE)) {
+        }
+        if (operation.equals(CREATE)) {
             if (phase.equals(POSTCOMMIT)) {
                 completeAsync(query, requestScope);
                 return;
-            } else if (phase.equals(PRESECURITY)) {
+            }
+            if (phase.equals(PRESECURITY)) {
                 updatePrincipalName(query, requestScope);
                 return;
             }
@@ -110,4 +112,12 @@ public abstract class AsyncAPIHook<T extends AsyncAPI> implements LifeCycleHook<
             query.setPrincipalName(principal.getName());
         }
     }
+
+    /**
+     * Get Callable operation to submit.
+     * @param query AsyncAPI object to complete.
+     * @param requestScope RequestScope object.
+     * @return Callable initialized.
+     */
+    public abstract Callable<AsyncAPIResult> getOperation(AsyncAPI query, RequestScope requestScope);
 }

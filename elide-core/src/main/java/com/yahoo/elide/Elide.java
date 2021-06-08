@@ -95,9 +95,7 @@ public class Elide {
         this.mapper = elideSettings.getMapper();
         this.transactionRegistry = new TransactionRegistry();
 
-        elideSettings.getSerdes().forEach((targetType, serde) -> {
-            CoerceUtil.register(targetType, serde);
-        });
+        elideSettings.getSerdes().forEach((type, serde) -> registerCustomSerde(type, serde, type.getSimpleName()));
 
         registerCustomSerde();
     }
@@ -476,7 +474,7 @@ public class Elide {
             requestScope.runQueuedPostCommitTriggers();
 
             if (log.isTraceEnabled()) {
-                requestScope.getPermissionExecutor().printCheckStats();
+                requestScope.getPermissionExecutor().logCheckStats();
             }
 
             return response;

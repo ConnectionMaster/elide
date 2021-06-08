@@ -21,9 +21,9 @@ import javax.persistence.Table;
 /**
  * No Update test bean.
  */
-@CreatePermission(expression = "allow all AND noCommit")
-@UpdatePermission(expression = "allow all AND noCommit")
-@Include(type = "nocommit")
+@CreatePermission(expression = "Prefab.Role.All AND noCommit")
+@UpdatePermission(expression = "Prefab.Role.All AND noCommit")
+@Include(name = "nocommit")
 // Hibernate
 @Entity
 @Table(name = "nocommit")

@@ -5,28 +5,25 @@
  */
 package com.yahoo.elide.datastores.aggregation.framework;
 
-import static com.yahoo.elide.core.utils.TypeHelper.getClassType;
 import com.yahoo.elide.core.datastore.DataStore;
 import com.yahoo.elide.core.datastore.test.DataStoreTestHarness;
 import com.yahoo.elide.datastores.aggregation.AggregationDataStore;
+import com.yahoo.elide.datastores.aggregation.DefaultQueryValidator;
 import com.yahoo.elide.datastores.aggregation.core.Slf4jQueryLogger;
 import com.yahoo.elide.datastores.aggregation.metadata.MetaDataStore;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.ConnectionDetails;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.SQLQueryEngine;
-import com.yahoo.elide.datastores.aggregation.queryengines.sql.annotation.FromSubquery;
-import com.yahoo.elide.datastores.aggregation.queryengines.sql.annotation.FromTable;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.dialects.SQLDialectFactory;
 import com.yahoo.elide.datastores.jpa.JpaDataStore;
 import com.yahoo.elide.datastores.jpa.transaction.NonJtaTransaction;
 import com.yahoo.elide.datastores.multiplex.MultiplexManager;
-import com.yahoo.elide.modelconfig.compile.ElideDynamicEntityCompiler;
+import com.yahoo.elide.modelconfig.validator.DynamicConfigValidator;
 import org.hibernate.Session;
 import lombok.AllArgsConstructor;
 
 import java.util.Collections;
 import java.util.HashSet;
 import java.util.Map;
-import java.util.Set;
 import java.util.function.Consumer;
 import javax.persistence.EntityManager;
 import javax.persistence.EntityManagerFactory;
@@ -37,7 +34,7 @@ public class AggregationDataStoreTestHarness implements DataStoreTestHarness {
     private EntityManagerFactory entityManagerFactory;
     private ConnectionDetails defaultConnectionDetails;
     private Map<String, ConnectionDetails> connectionDetailsMap;
-    private ElideDynamicEntityCompiler compiler;
+    private DynamicConfigValidator validator;
 
     public AggregationDataStoreTestHarness(EntityManagerFactory entityManagerFactory, DataSource defaultDataSource) {
         this(entityManagerFactory, new ConnectionDetails(defaultDataSource, SQLDialectFactory.getDefaultDialect()));
@@ -54,35 +51,32 @@ public class AggregationDataStoreTestHarness implements DataStoreTestHarness {
         AggregationDataStore.AggregationDataStoreBuilder aggregationDataStoreBuilder = AggregationDataStore.builder();
 
         MetaDataStore metaDataStore;
-        if (compiler != null) {
-            try {
-                metaDataStore = new MetaDataStore(compiler, true);
-                Set<Class<?>> annotatedClasses = new HashSet<>();
-                annotatedClasses.addAll(compiler.findAnnotatedClasses(FromTable.class));
-                annotatedClasses.addAll(compiler.findAnnotatedClasses(FromSubquery.class));
-                aggregationDataStoreBuilder.dynamicCompiledClasses(getClassType(annotatedClasses));
-            } catch (ClassNotFoundException e) {
-                throw new IllegalStateException(e);
-            }
+        if (validator != null) {
+           metaDataStore = new MetaDataStore(validator.getElideTableConfig().getTables(),
+                   validator.getElideNamespaceConfig().getNamespaceconfigs(), true);
+
+           aggregationDataStoreBuilder.dynamicCompiledClasses(metaDataStore.getDynamicTypes());
         } else {
             metaDataStore = new MetaDataStore(true);
         }
 
         AggregationDataStore aggregationDataStore = aggregationDataStoreBuilder
-                .queryEngine(new SQLQueryEngine(metaDataStore, defaultConnectionDetails, connectionDetailsMap))
+                .queryEngine(new SQLQueryEngine(metaDataStore, defaultConnectionDetails, connectionDetailsMap,
+                        new HashSet<>(), new DefaultQueryValidator(metaDataStore.getMetadataDictionary())))
                 .queryLogger(new Slf4jQueryLogger())
                 .build();
 
-        Consumer<EntityManager> txCancel = (em) -> { em.unwrap(Session.class).cancelQuery(); };
+        Consumer<EntityManager> txCancel = em -> em.unwrap(Session.class).cancelQuery();
 
         DataStore jpaStore = new JpaDataStore(
                 () -> entityManagerFactory.createEntityManager(),
-                (em) -> { return new NonJtaTransaction(em, txCancel); }
+                em -> new NonJtaTransaction(em, txCancel)
         );
 
         return new MultiplexManager(jpaStore, metaDataStore, aggregationDataStore);
     }
 
+    @Override
     public void cleanseTestData() {
 
     }

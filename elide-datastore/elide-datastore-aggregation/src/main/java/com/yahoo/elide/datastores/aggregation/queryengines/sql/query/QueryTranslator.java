@@ -12,10 +12,14 @@ import com.yahoo.elide.core.filter.FilterTranslator;
 import com.yahoo.elide.core.filter.expression.FilterExpression;
 import com.yahoo.elide.core.filter.expression.PredicateExtractionVisitor;
 import com.yahoo.elide.core.filter.predicates.FilterPredicate;
+import com.yahoo.elide.core.request.Argument;
 import com.yahoo.elide.core.request.Pagination;
 import com.yahoo.elide.core.request.Sorting;
 import com.yahoo.elide.core.type.Type;
-import com.yahoo.elide.datastores.aggregation.metadata.models.Table;
+import com.yahoo.elide.datastores.aggregation.metadata.ColumnContext;
+import com.yahoo.elide.datastores.aggregation.metadata.MetaDataStore;
+import com.yahoo.elide.datastores.aggregation.metadata.TableContext;
+import com.yahoo.elide.datastores.aggregation.metadata.enums.ValueType;
 import com.yahoo.elide.datastores.aggregation.query.ColumnProjection;
 import com.yahoo.elide.datastores.aggregation.query.Query;
 import com.yahoo.elide.datastores.aggregation.query.QueryVisitor;
@@ -23,7 +27,9 @@ import com.yahoo.elide.datastores.aggregation.query.Queryable;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.annotation.FromSubquery;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.annotation.FromTable;
 import com.yahoo.elide.datastores.aggregation.queryengines.sql.dialects.SQLDialect;
-import com.yahoo.elide.datastores.aggregation.queryengines.sql.metadata.SQLReferenceTable;
+import com.yahoo.elide.datastores.aggregation.queryengines.sql.expression.ExpressionParser;
+import com.yahoo.elide.datastores.aggregation.queryengines.sql.expression.JoinExpressionExtractor;
+import com.yahoo.elide.datastores.aggregation.queryengines.sql.expression.Reference;
 
 import java.util.Collection;
 import java.util.LinkedHashSet;
@@ -37,26 +43,32 @@ import java.util.stream.Stream;
 /**
  * Translates a client query into a SQL query.
  */
-public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
+public class QueryTranslator implements QueryVisitor<NativeQuery.NativeQueryBuilder> {
 
-    private final SQLReferenceTable referenceTable;
+    private final MetaDataStore metaDataStore;
     private final EntityDictionary dictionary;
     private final SQLDialect dialect;
+    private FilterTranslator filterTranslator;
+    private final ExpressionParser parser;
+    private final Query clientQuery;
 
-    public QueryTranslator(SQLReferenceTable referenceTable, SQLDialect sqlDialect) {
-        this.referenceTable = referenceTable;
-        this.dictionary = referenceTable.getDictionary();
+    public QueryTranslator(MetaDataStore metaDataStore, SQLDialect sqlDialect, Query clientQuery) {
+        this.metaDataStore = metaDataStore;
+        this.dictionary = metaDataStore.getMetadataDictionary();
         this.dialect = sqlDialect;
+        this.filterTranslator = new FilterTranslator(dictionary);
+        this.parser = new ExpressionParser(metaDataStore);
+        this.clientQuery = clientQuery;
     }
 
     @Override
-    public SQLQuery.SQLQueryBuilder visitQuery(Query query) {
-        SQLQuery.SQLQueryBuilder builder = query.getSource().accept(this);
+    public NativeQuery.NativeQueryBuilder visitQuery(Query query) {
+        NativeQuery.NativeQueryBuilder builder = query.getSource().accept(this);
 
         if (query.isNested()) {
-            SQLQuery innerQuery = builder.build();
+            NativeQuery innerQuery = builder.build();
 
-            builder = SQLQuery.builder().fromClause("(" + innerQuery.toString() + ") AS "
+            builder = NativeQuery.builder().fromClause("(" + innerQuery + ") AS "
                     + applyQuotes(query.getSource().getAlias()));
         }
 
@@ -64,40 +76,44 @@ public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
 
         builder.projectionClause(constructProjectionWithReference(query));
 
-        Set<ColumnProjection> groupByDimensions = query.getAllDimensionProjections();
+        //Handles join for all type of column projects - dimensions, metrics and time dimention
+        joinExpressions.addAll(extractJoinExpressions(query));
+
+        Set<ColumnProjection> groupByDimensions = query.getAllDimensionProjections().stream()
+                .map(SQLColumnProjection.class::cast)
+                .filter(SQLColumnProjection::isProjected)
+                .collect(Collectors.toCollection(LinkedHashSet::new));
 
         if (!groupByDimensions.isEmpty()) {
             if (!query.getMetricProjections().isEmpty()) {
                 builder.groupByClause("GROUP BY " + groupByDimensions.stream()
                         .map(SQLColumnProjection.class::cast)
-                        .map((column) -> column.toSQL(referenceTable))
+                        .map((column) -> column.toSQL(query, metaDataStore))
                         .collect(Collectors.joining(", ")));
             }
-
-            joinExpressions.addAll(extractJoinExpressions(groupByDimensions, query.getSource()));
         }
 
         if (query.getWhereFilter() != null) {
             builder.whereClause("WHERE " + translateFilterExpression(
                     query.getWhereFilter(),
-                    filterPredicate -> generatePredicatePathReference(filterPredicate.getPath(), query)));
+                    path -> generatePredicatePathReference(path, query)));
 
-            joinExpressions.addAll(extractJoinExpressions(query.getSource(), query.getWhereFilter()));
+            joinExpressions.addAll(extractJoinExpressions(query, query.getWhereFilter()));
         }
 
         if (query.getHavingFilter() != null) {
             builder.havingClause("HAVING " + translateFilterExpression(
                     query.getHavingFilter(),
-                    (predicate) -> constructHavingClauseWithReference(predicate, query)));
+                    (path) -> constructHavingClauseWithReference(path, query)));
 
-            joinExpressions.addAll(extractJoinExpressions(query.getSource(), query.getHavingFilter()));
+            joinExpressions.addAll(extractJoinExpressions(query, query.getHavingFilter()));
         }
 
         if (query.getSorting() != null) {
             Map<Path, Sorting.SortOrder> sortClauses = query.getSorting().getSortingPaths();
             builder.orderByClause(extractOrderBy(sortClauses, query));
 
-            joinExpressions.addAll(extractJoinExpressions(query.getSource(), sortClauses));
+            joinExpressions.addAll(extractJoinExpressions(query, sortClauses));
         }
 
         Pagination pagination = query.getPagination();
@@ -109,14 +125,16 @@ public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
     }
 
     @Override
-    public SQLQuery.SQLQueryBuilder visitQueryable(Queryable table) {
-        SQLQuery.SQLQueryBuilder builder = SQLQuery.builder();
+    public NativeQuery.NativeQueryBuilder visitQueryable(Queryable table) {
+        NativeQuery.NativeQueryBuilder builder = NativeQuery.builder();
 
         Type<?> tableCls = dictionary.getEntityClass(table.getName(), table.getVersion());
         String tableAlias = applyQuotes(table.getAlias());
 
+        TableContext context = TableContext.builder().tableArguments(clientQuery.getArguments()).build();
+
         String tableStatement = tableCls.isAnnotationPresent(FromSubquery.class)
-                ? "(" + tableCls.getAnnotation(FromSubquery.class).sql() + ")"
+                ? "(" + context.resolve(tableCls.getAnnotation(FromSubquery.class).sql()) + ")"
                 : tableCls.isAnnotationPresent(FromTable.class)
                 ? applyQuotes(tableCls.getAnnotation(FromTable.class).name())
                 : applyQuotes(table.getName());
@@ -127,15 +145,15 @@ public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
     /**
      * Construct HAVING clause filter using physical column references. Metric fields need to be aggregated in HAVING.
      *
-     * @param predicate a filter predicate in HAVING clause
+     * @param path a filter predicate path in HAVING clause
      * @param query query
      * @return an filter/constraint expression that can be put in HAVING clause
      */
-    private String constructHavingClauseWithReference(FilterPredicate predicate, Query query) {
-        Path.PathElement last = predicate.getPath().lastElement().get();
+    private String constructHavingClauseWithReference(Path path, Query query) {
+        Path.PathElement last = path.lastElement().get();
         String fieldName = last.getFieldName();
 
-        if (predicate.getPath().getPathElements().size() > 1) {
+        if (path.getPathElements().size() > 1) {
             throw new BadRequestException("The having clause can only reference fact table aggregations.");
         }
 
@@ -147,10 +165,9 @@ public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
                 .orElse(null);
 
         if (metric != null) {
-            return metric.toSQL(referenceTable);
-        } else {
-            return generatePredicatePathReference(predicate.getPath(), query);
+            return metric.toSQL(query, metaDataStore);
         }
+        return generatePredicatePathReference(path, query);
     }
 
     /**
@@ -164,14 +181,17 @@ public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
         // TODO: project metric field using table column reference
         List<String> metricProjections = query.getMetricProjections().stream()
                 .map(SQLMetricProjection.class::cast)
-                .map(invocation -> invocation.toSQL(referenceTable) + " AS "
-                                + applyQuotes(invocation.getAlias()))
+                .filter(SQLColumnProjection::isProjected)
+                .filter(projection -> ! projection.getValueType().equals(ValueType.ID))
+                .map(invocation -> invocation.toSQL(query, metaDataStore) + " AS "
+                                + applyQuotes(invocation.getSafeAlias()))
                 .collect(Collectors.toList());
 
         List<String> dimensionProjections = query.getAllDimensionProjections().stream()
                 .map(SQLColumnProjection.class::cast)
-                .map(dimension -> dimension.toSQL(referenceTable) + " AS "
-                                + applyQuotes(dimension.getAlias()))
+                .filter(SQLColumnProjection::isProjected)
+                .map(dimension -> dimension.toSQL(query, metaDataStore) + " AS "
+                                + applyQuotes(dimension.getSafeAlias()))
                 .collect(Collectors.toList());
 
         if (metricProjections.isEmpty()) {
@@ -187,7 +207,7 @@ public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
      * @param sortClauses The list of sort columns and their sort order (ascending or descending).
      * @return A SQL expression
      */
-    private String extractOrderBy(Map<Path, Sorting.SortOrder> sortClauses, Query plan) {
+    private String extractOrderBy(Map<Path, Sorting.SortOrder> sortClauses, Query query) {
         if (sortClauses.isEmpty()) {
             return "";
         }
@@ -201,11 +221,11 @@ public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
 
                     Path.PathElement last = path.lastElement().get();
 
-                    SQLColumnProjection projection = fieldToColumnProjection(plan, last.getFieldName());
-                    String orderByClause = (plan.getColumnProjections().contains(projection)
+                    SQLColumnProjection projection = fieldToColumnProjection(query, last.getAlias());
+                    String orderByClause = (query.getColumnProjections().contains(projection)
                             && dialect.useAliasForOrderByClause())
-                            ? applyQuotes(projection.getAlias())
-                            : projection.toSQL(referenceTable);
+                            ? applyQuotes(projection.getSafeAlias())
+                            : projection.toSQL(query, metaDataStore);
 
                     return orderByClause + (order.equals(Sorting.SortOrder.desc) ? " DESC" : " ASC");
                 })
@@ -218,9 +238,9 @@ public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
      * @param path The path object from the table that may contain a join.
      * @return
      */
-    private Set<String> extractJoinExpressions(Queryable source, Path path) {
-        Path.PathElement last = path.lastElement().get();
-        return referenceTable.getResolvedJoinExpressions(source, last.getFieldName());
+    private Set<String> extractJoinExpressions(Query query, Path path) {
+        SQLColumnProjection columnProj = pathToColumnProjection(path, query);
+        return extractJoinExpressions(columnProj, query);
     }
 
     /**
@@ -230,12 +250,12 @@ public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
      * @param expression The filter expression
      * @return A set of Join expressions that capture a relationship traversal.
      */
-    private Set<String> extractJoinExpressions(Queryable source, FilterExpression expression) {
+    private Set<String> extractJoinExpressions(Query query, FilterExpression expression) {
         Collection<FilterPredicate> predicates = expression.accept(new PredicateExtractionVisitor());
 
         return predicates.stream()
                 .map(FilterPredicate::getPath)
-                .map(path -> extractJoinExpressions(source, path))
+                .map(path -> extractJoinExpressions(query, path))
                 .flatMap(Set::stream)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
     }
@@ -247,41 +267,59 @@ public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
      * @param sortClauses The list of sort columns and their sort order (ascending or descending).
      * @return A set of Join expressions that capture a relationship traversal.
      */
-    private Set<String> extractJoinExpressions(Queryable source, Map<Path, Sorting.SortOrder> sortClauses) {
+    private Set<String> extractJoinExpressions(Query query, Map<Path, Sorting.SortOrder> sortClauses) {
         return sortClauses.keySet().stream()
-                .map(path -> extractJoinExpressions(source, path))
+                .map(path -> extractJoinExpressions(query, path))
                 .flatMap(Set::stream)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
     }
 
     /**
-     * Given the set of group by dimensions, extract any entity relationship traversals that require joins.
-     * This method takes in a {@link Table} because the sql join path meta data is stored in it.
-     *
-     * @param groupByDimensions The list of dimensions we are grouping on.
-     * @param source queried table
+     * Get required join expressions for all the projected columns in given Query.
+     * @param query Expanded Query.
      * @return A set of Join expressions that capture a relationship traversal.
      */
-    private Set<String> extractJoinExpressions(Set<ColumnProjection> groupByDimensions,
-                                           Queryable source) {
-        return groupByDimensions.stream()
-                .map(column -> referenceTable.getResolvedJoinExpressions(source, column.getName()))
+    private Set<String> extractJoinExpressions(Query query) {
+        return query.getColumnProjections().stream()
+                .filter(column -> column.isProjected())
+                .map(column -> extractJoinExpressions(column, query))
                 .flatMap(Collection::stream)
                 .collect(Collectors.toCollection(LinkedHashSet::new));
+    }
+
+    /**
+     * Get required join expressions for given column in given Query.
+     * @param column {@link ColumnProjection}
+     * @param query Expanded Query.
+     * @return A set of Join expressions that capture a relationship traversal.
+     */
+    private Set<String> extractJoinExpressions(ColumnProjection column, Query query) {
+        Set<String> joinExpressions = new LinkedHashSet<>();
+
+        ColumnContext context = ColumnContext.builder()
+                        .queryable(query)
+                        .alias(query.getSource().getAlias())
+                        .metaDataStore(metaDataStore)
+                        .column(column)
+                        .tableArguments(query.getArguments())
+                        .build();
+
+        JoinExpressionExtractor visitor = new JoinExpressionExtractor(context);
+        List<Reference> references = parser.parse(query.getSource(), column);
+        references.forEach(ref -> joinExpressions.addAll(ref.accept(visitor)));
+        return joinExpressions;
     }
 
     /**
      * Translates a filter expression into SQL.
      *
      * @param expression The filter expression
-     * @param columnGenerator A function which generates a column reference in SQL from a FilterPredicate.
+     * @param aliasGenerator A function which generates a column reference in SQL from a Path.
      * @return A SQL expression
      */
     private String translateFilterExpression(FilterExpression expression,
-                                             Function<FilterPredicate, String> columnGenerator) {
-        FilterTranslator filterVisitor = new FilterTranslator();
-
-        return filterVisitor.apply(expression, columnGenerator);
+                                             Function<Path, String> aliasGenerator) {
+        return filterTranslator.apply(expression, aliasGenerator);
     }
 
     /**
@@ -292,16 +330,35 @@ public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
      * @return A SQL fragment that references a database column
      */
     private String generatePredicatePathReference(Path path, Query query) {
+        SQLColumnProjection projection = pathToColumnProjection(path, query);
+        return projection.toSQL(query, metaDataStore);
+    }
+
+    private SQLColumnProjection pathToColumnProjection(Path path, Query query) {
         Path.PathElement last = path.lastElement().get();
 
-        SQLColumnProjection projection = fieldToColumnProjection(query, last.getFieldName());
-        return projection.toSQL(referenceTable);
+        Map<String, Argument> arguments = last.getArguments().stream()
+                        .collect(Collectors.toMap(Argument::getName, Function.identity()));
+
+        return fieldToColumnProjection(query, last.getAlias(), arguments);
     }
 
     private SQLColumnProjection fieldToColumnProjection(Query query, String fieldName) {
         ColumnProjection projection = query.getColumnProjection(fieldName);
+
         if (projection == null) {
             projection = query.getSource().getColumnProjection(fieldName);
+        }
+        return (SQLColumnProjection) projection;
+    }
+
+    private SQLColumnProjection fieldToColumnProjection(Query query, String fieldName,
+                    Map<String, Argument> arguments) {
+
+        ColumnProjection projection = query.getColumnProjection(fieldName, arguments);
+
+        if (projection == null) {
+            projection = query.getSource().getColumnProjection(fieldName, arguments);
         }
         return (SQLColumnProjection) projection;
     }
@@ -313,6 +370,6 @@ public class QueryTranslator implements QueryVisitor<SQLQuery.SQLQueryBuilder> {
      * @return quoted alias
      */
     private String applyQuotes(String str) {
-        return SQLReferenceTable.applyQuotes(str, dialect);
+        return ColumnContext.applyQuotes(str, dialect);
     }
 }

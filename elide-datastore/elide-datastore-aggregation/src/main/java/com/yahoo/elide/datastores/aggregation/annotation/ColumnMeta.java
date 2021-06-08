@@ -18,16 +18,16 @@ import java.lang.annotation.Target;
 @Target({ElementType.FIELD, ElementType.METHOD})
 @Retention(RetentionPolicy.RUNTIME)
 public @interface ColumnMeta {
-
     String friendlyName() default "";
     String description() default "";
     String category() default "";
-    String tableSource() default "";
+    TableSource tableSource() default @TableSource(table = "", column = "");
     String [] tags() default {};
     String [] values() default {};
 
     /**
      * Indicates the cardinality for the column.
+     * @return size
      */
     CardinalitySize size() default CardinalitySize.UNKNOWN;
 }

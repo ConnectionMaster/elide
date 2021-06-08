@@ -37,7 +37,7 @@ public class OperatorTest {
     private Author author;
     private Predicate fn;
 
-    public class TestEntityDictionary extends EntityDictionary {
+    public static class TestEntityDictionary extends EntityDictionary {
         public TestEntityDictionary(Map<String, Class<? extends Check>> checks) {
             super(checks);
         }
@@ -63,7 +63,7 @@ public class OperatorTest {
 
     private Path constructPath(Class<?> rootEntity, String pathString) {
         List<Path.PathElement> pathElementsList = new ArrayList<>();
-        Type prevEntity = new ClassType(rootEntity);
+        Type prevEntity = ClassType.of(rootEntity);
         for (String field : pathString.split("\\.")) {
             Type<?> fieldType = ("id".equals(field.toLowerCase(Locale.ENGLISH)))
                     ? dictionary.getIdType(prevEntity)
@@ -333,6 +333,12 @@ public class OperatorTest {
         fn = Operator.GE.contextualize(constructPath(Author.class, "id"), Arrays.asList("11", "12"), requestScope);
         assertFalse(fn.test(author));
 
+        // between operator
+        fn = Operator.BETWEEN.contextualize(constructPath(Author.class, "id"), Arrays.asList("9", "11"), requestScope);
+        assertTrue(fn.test(author));
+        fn = Operator.NOTBETWEEN.contextualize(constructPath(Author.class, "id"), Arrays.asList("9", "11"), requestScope);
+        assertFalse(fn.test(author));
+
         // when val is null
         author.setId(null);
         fn = Operator.LT.contextualize(constructPath(Author.class, "id"), Collections.singletonList("10"), requestScope);
@@ -343,6 +349,7 @@ public class OperatorTest {
         assertFalse(fn.test(author));
         fn = Operator.GE.contextualize(constructPath(Author.class, "id"), Collections.singletonList("10"), requestScope);
         assertFalse(fn.test(author));
+
     }
 
     @Test

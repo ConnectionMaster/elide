@@ -11,6 +11,9 @@ import com.yahoo.elide.core.exceptions.InvalidValueException;
 import com.yahoo.elide.core.request.Pagination;
 import com.yahoo.elide.core.type.ClassType;
 import com.yahoo.elide.core.type.Type;
+
+import com.google.common.collect.ImmutableMap;
+
 import lombok.EqualsAndHashCode;
 import lombok.Getter;
 import lombok.Setter;
@@ -18,7 +21,6 @@ import lombok.ToString;
 
 import java.util.HashMap;
 import java.util.Map;
-import java.util.Optional;
 import java.util.stream.Collectors;
 import javax.ws.rs.core.MultivaluedMap;
 
@@ -48,14 +50,12 @@ public class PaginationImpl implements Pagination {
     // For requesting total pages/records be included in the response page meta data
     public static final String PAGE_TOTALS_KEY = "page[totals]";
 
-    public static final Map<String, PaginationKey> PAGE_KEYS = new HashMap<>();
-    static {
-        PAGE_KEYS.put(PAGE_NUMBER_KEY, PaginationKey.number);
-        PAGE_KEYS.put(PAGE_SIZE_KEY, PaginationKey.size);
-        PAGE_KEYS.put(PAGE_OFFSET_KEY, PaginationKey.offset);
-        PAGE_KEYS.put(PAGE_LIMIT_KEY, PaginationKey.limit);
-        PAGE_KEYS.put(PAGE_TOTALS_KEY, PaginationKey.totals);
-    }
+    public static final Map<String, PaginationKey> PAGE_KEYS = ImmutableMap.of(
+            PAGE_NUMBER_KEY, PaginationKey.number,
+            PAGE_SIZE_KEY, PaginationKey.size,
+            PAGE_OFFSET_KEY, PaginationKey.offset,
+            PAGE_LIMIT_KEY, PaginationKey.limit,
+            PAGE_TOTALS_KEY, PaginationKey.totals);
 
     @Getter
     @Setter
@@ -94,7 +94,7 @@ public class PaginationImpl implements Pagination {
                           int systemMaxLimit,
                           Boolean generateTotals,
                           Boolean pageByPages) {
-        this(new ClassType(entityClass), clientOffset, clientLimit,
+        this(ClassType.of(entityClass), clientOffset, clientLimit,
                 systemDefaultLimit, systemMaxLimit, generateTotals, pageByPages);
     }
 
@@ -174,16 +174,16 @@ public class PaginationImpl implements Pagination {
      * @throws InvalidValueException invalid query parameter
      */
     public static PaginationImpl parseQueryParams(Type<?> entityClass,
-                                                  final Optional<MultivaluedMap<String, String>> queryParams,
+                                                  final MultivaluedMap<String, String> queryParams,
                                                   ElideSettings elideSettings)
             throws InvalidValueException {
 
-        if (! queryParams.isPresent()) {
+        if (queryParams.isEmpty()) {
             return getDefaultPagination(entityClass, elideSettings);
         }
 
         final Map<PaginationKey, Integer> pageData = new HashMap<>();
-        queryParams.get().entrySet()
+        queryParams.entrySet()
                 .forEach(paramEntry -> {
                     final String queryParamKey = paramEntry.getKey();
                     if (PAGE_KEYS.containsKey(queryParamKey)) {

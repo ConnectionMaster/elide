@@ -9,6 +9,9 @@ import com.yahoo.elide.core.PersistentResource;
 import com.yahoo.elide.core.ResourceLineage;
 import com.google.common.collect.ImmutableMap;
 
+import org.apache.commons.collections4.CollectionUtils;
+import org.apache.commons.lang3.StringUtils;
+
 import java.util.List;
 import java.util.Map;
 
@@ -43,18 +46,18 @@ public class DefaultJSONApiLinks implements JSONApiLinks {
     }
 
     /**
-     * Creates the link from resources path
+     * Creates the link from resources path.
      * @param resource
      * @return
      */
     protected String getResourceUrl(PersistentResource resource) {
         StringBuilder result = new StringBuilder();
 
-        if (baseUrl == null || baseUrl.isEmpty()) {
+        if (StringUtils.isEmpty(baseUrl)) {
             if (resource.getRequestScope().getBaseUrlEndPoint() != null) {
                 result.append(resource.getRequestScope().getBaseUrlEndPoint());
                 String jsonApiPath = resource.getRequestScope().getElideSettings().getJsonApiPath();
-                if (jsonApiPath != null && !jsonApiPath.isEmpty()) {
+                if (StringUtils.isNotEmpty(jsonApiPath)) {
                     result.append(jsonApiPath);
                 }
                 result.append("/");
@@ -64,7 +67,7 @@ public class DefaultJSONApiLinks implements JSONApiLinks {
         }
 
         List<ResourceLineage.LineagePath> path = resource.getLineage().getResourcePath();
-        if (path.size() > 0) {
+        if (CollectionUtils.isNotEmpty(path)) {
             result.append(String.join("/", getPathSegment(path), resource.getId()));
         } else {
             result.append(String.join("/", resource.getTypeName(), resource.getId()));

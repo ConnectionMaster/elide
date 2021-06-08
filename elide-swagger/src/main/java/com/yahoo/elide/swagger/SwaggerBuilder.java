@@ -209,9 +209,8 @@ public class SwaggerBuilder {
             Path path = new Path();
 
             /* The path parameter apply for all operations */
-            lineage.stream().forEach((item) -> {
-                path.addParameter(item.getPathParameter());
-            });
+            lineage.stream().forEach(item ->
+                    path.addParameter(item.getPathParameter()));
 
             String typeName = dictionary.getJsonAliasFor(type);
 
@@ -298,11 +297,8 @@ public class SwaggerBuilder {
             Path path = new Path();
 
             /* The path parameter apply for all operations */
-            if (! lineage.isEmpty()) {
-                lineage.stream().forEach((item) -> {
-                    path.addParameter(item.getPathParameter());
-                });
-            }
+            lineage.stream().forEach(item ->
+                path.addParameter(item.getPathParameter()));
 
             Response okSingularResponse = new Response()
                     .description("Successful response")
@@ -361,9 +357,8 @@ public class SwaggerBuilder {
             Path path = new Path();
 
             /* The path parameter apply for all operations */
-            getFullLineage().stream().forEach((item) -> {
-                path.addParameter(item.getPathParameter());
-            });
+            getFullLineage().stream().forEach(item ->
+                path.addParameter(item.getPathParameter()));
 
             Response okSingularResponse = new Response()
                 .description("Successful response")
@@ -404,9 +399,8 @@ public class SwaggerBuilder {
          * @return the decorated path
          */
         private Path decorateGlobalParameters(Path path) {
-            globalParams.forEach((param) -> {
-                path.addParameter(param);
-            });
+            globalParams.forEach(param ->
+                path.addParameter(param));
             return path;
         }
 
@@ -773,12 +767,10 @@ public class SwaggerBuilder {
         for (Type<?> clazz : allClasses) {
             if (clazz instanceof ClassType) {
                 models.putAll(converters.readAll(((ClassType) clazz).getCls()));
-            } else if (clazz instanceof Type) {
+            } else {
                 ModelConverterContextImpl context = new ModelConverterContextImpl(Arrays.asList(converter));
                 context.resolve(clazz);
                 models.putAll(context.getDefinedModels());
-            } else {
-                models.putAll(converters.readAll(clazz));
             }
         }
         swagger.setDefinitions(models);

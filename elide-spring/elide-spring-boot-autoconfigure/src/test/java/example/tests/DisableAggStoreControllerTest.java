@@ -9,12 +9,16 @@ import static io.restassured.RestAssured.when;
 import static org.hamcrest.Matchers.containsInAnyOrder;
 import com.yahoo.elide.core.exceptions.HttpStatus;
 import org.junit.jupiter.api.Test;
-import org.springframework.test.context.ActiveProfiles;
+import org.springframework.test.context.TestPropertySource;
 
 /**
  * Executes Controller tests with Aggregation Store disabled.
  */
-@ActiveProfiles("disableAggStore")
+@TestPropertySource(
+        properties = {
+                "elide.aggregation-store.enabled=false"
+        }
+)
 public class DisableAggStoreControllerTest extends ControllerTest {
 
     @Override
@@ -24,6 +28,6 @@ public class DisableAggStoreControllerTest extends ControllerTest {
                 .get("/doc")
                 .then()
                 .statusCode(HttpStatus.SC_OK)
-                .body("tags.name", containsInAnyOrder("group", "asyncQuery", "product", "version", "tableExport"));
+                .body("tags.name", containsInAnyOrder("group", "asyncQuery", "product", "version"));
     }
 }

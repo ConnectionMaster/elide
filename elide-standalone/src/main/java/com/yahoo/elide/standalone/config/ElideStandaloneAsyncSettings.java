@@ -8,6 +8,9 @@ package com.yahoo.elide.standalone.config;
 import com.yahoo.elide.async.service.dao.AsyncAPIDAO;
 import com.yahoo.elide.async.service.storageengine.ResultStorageEngine;
 
+import java.util.concurrent.ExecutorService;
+import java.util.concurrent.Executors;
+
 /**
  * interface for configuring the Async configuration of standalone application.
  */
@@ -94,5 +97,59 @@ public interface ElideStandaloneAsyncSettings {
      */
     default ResultStorageEngine getResultStorageEngine() {
         return null;
+    }
+
+    /**
+     * API root path specification for the export endpoint.
+     *
+     * @return Default: /export
+     */
+    default String getExportApiPathSpec() {
+        return "/export/*";
+    }
+
+    /**
+     * Enable the Export endpoint. If false, the endpoint and export support will be disabled.
+     *
+     * @return Default: False
+     */
+    default boolean enableExport() {
+        return false;
+    }
+
+    /**
+     * Skip generating Header when exporting in CSV format.
+     *
+     * @return Default: False
+     */
+    default boolean skipCSVHeader() {
+        return false;
+    }
+
+    /**
+     * Storage engine destination.
+     *
+     * @return Default: /tmp
+     */
+    default String getStorageDestination() {
+        return "/tmp";
+    }
+
+    /**
+     * Storage engine destination.
+     *
+     * @return Default: 30
+     */
+    default Integer getExportAsyncResponseTimeoutSeconds() {
+        return 30;
+    }
+
+    /**
+     * Executor for running export resource asynchronously.
+     *
+     * @return Default: null
+     */
+    default ExecutorService getExportAsyncResponseExecutor() {
+        return enableExport() ? Executors.newFixedThreadPool(getThreadSize() == null ? 6 : getThreadSize()) : null;
     }
 }

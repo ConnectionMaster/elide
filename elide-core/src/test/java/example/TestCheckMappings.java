@@ -21,7 +21,7 @@ import java.util.Optional;
 public class TestCheckMappings {
     public static final ImmutableMap<String, Class<? extends Check>> MAPPINGS =
             ImmutableMap.<String, Class<? extends Check>>builder()
-                    .put("allow all", Role.ALL.class)
+                    .put("Prefab.Role.All", Role.ALL.class)
                     .put("changeSpecCollection", PersistentResourceTest.ChangeSpecCollection.class)
                     .put("changeSpecNonCollection", PersistentResourceTest.ChangeSpecNonCollection.class)
                     .put("initCheck", Child.InitCheck.class)
@@ -32,6 +32,7 @@ public class TestCheckMappings {
                     .put("privatePermission", PrivatePermission.class)
                     .put("sampleOperation", PermissionExecutorTest.SampleOperationCheck.class)
                     .put("sampleOperationInverse", PermissionExecutorTest.SampleOperationCheckInverse.class)
+                    .put("sampleCommit", PermissionExecutorTest.SampleCommitCheck.class)
                     .put("shouldCache", PermissionExecutorTest.ShouldCache.class)
                     .put("peUserCheck", PermissionExecutorTest.UserCheckTest.class)
                     .put("passingOp", PermissionExecutorTest.PassingOperationCheck.class)

@@ -14,8 +14,21 @@ import com.yahoo.elide.annotation.ComputedAttribute;
 import com.yahoo.elide.annotation.ComputedRelationship;
 import com.yahoo.elide.annotation.Exclude;
 import com.yahoo.elide.annotation.Include;
-import com.yahoo.elide.annotation.LifeCycleHookBinding;
+import com.yahoo.elide.annotation.LifeCycleHookBinding.Operation;
+import com.yahoo.elide.annotation.LifeCycleHookBinding.TransactionPhase;
 import com.yahoo.elide.annotation.NonTransferable;
+import com.yahoo.elide.annotation.OnCreatePostCommit;
+import com.yahoo.elide.annotation.OnCreatePreCommit;
+import com.yahoo.elide.annotation.OnCreatePreSecurity;
+import com.yahoo.elide.annotation.OnDeletePostCommit;
+import com.yahoo.elide.annotation.OnDeletePreCommit;
+import com.yahoo.elide.annotation.OnDeletePreSecurity;
+import com.yahoo.elide.annotation.OnReadPostCommit;
+import com.yahoo.elide.annotation.OnReadPreCommit;
+import com.yahoo.elide.annotation.OnReadPreSecurity;
+import com.yahoo.elide.annotation.OnUpdatePostCommit;
+import com.yahoo.elide.annotation.OnUpdatePreCommit;
+import com.yahoo.elide.annotation.OnUpdatePreSecurity;
 import com.yahoo.elide.annotation.SecurityCheck;
 import com.yahoo.elide.core.PersistentResource;
 import com.yahoo.elide.core.RequestScope;
@@ -23,8 +36,10 @@ import com.yahoo.elide.core.exceptions.HttpStatusException;
 import com.yahoo.elide.core.exceptions.InternalServerErrorException;
 import com.yahoo.elide.core.exceptions.InvalidAttributeException;
 import com.yahoo.elide.core.lifecycle.LifeCycleHook;
+import com.yahoo.elide.core.security.PermissionExecutor;
 import com.yahoo.elide.core.security.checks.Check;
 import com.yahoo.elide.core.security.checks.FilterExpressionCheck;
+import com.yahoo.elide.core.security.checks.UserCheck;
 import com.yahoo.elide.core.security.checks.prefab.Collections.AppendOnly;
 import com.yahoo.elide.core.security.checks.prefab.Collections.RemoveOnly;
 import com.yahoo.elide.core.security.checks.prefab.Role;
@@ -39,11 +54,13 @@ import com.yahoo.elide.core.utils.ClassScanner;
 import com.yahoo.elide.core.utils.coerce.CoerceUtil;
 import com.yahoo.elide.core.utils.coerce.converters.Serde;
 import com.google.common.base.Preconditions;
+import com.google.common.base.Throwables;
 import com.google.common.collect.BiMap;
 import com.google.common.collect.HashBiMap;
 import com.google.common.collect.Maps;
 import com.google.common.collect.Sets;
 import org.antlr.v4.runtime.tree.ParseTree;
+import org.apache.commons.collections4.CollectionUtils;
 import org.apache.commons.lang3.StringUtils;
 import org.apache.commons.lang3.tuple.Pair;
 import lombok.Getter;
@@ -57,6 +74,7 @@ import java.util.ArrayList;
 import java.util.Arrays;
 import java.util.Collection;
 import java.util.Collections;
+import java.util.HashMap;
 import java.util.HashSet;
 import java.util.LinkedHashMap;
 import java.util.LinkedHashSet;
@@ -80,7 +98,7 @@ import javax.ws.rs.WebApplicationException;
 /**
  * Entity Dictionary maps JSON API Entity beans to/from Entity type names.
  *
- * @see Include#type
+ * @see Include#name
  */
 @Slf4j
 @SuppressWarnings("static-method")
@@ -91,9 +109,13 @@ public class EntityDictionary {
 
     protected final ConcurrentHashMap<Pair<String, String>, Type<?>> bindJsonApiToEntity = new ConcurrentHashMap<>();
     protected final ConcurrentHashMap<Type<?>, EntityBinding> entityBindings = new ConcurrentHashMap<>();
+    @Getter
+    protected final ConcurrentHashMap<Type<?>, Function<RequestScope, PermissionExecutor>> entityPermissionExecutor =
+            new ConcurrentHashMap<>();
     protected final CopyOnWriteArrayList<Type<?>> bindEntityRoots = new CopyOnWriteArrayList<>();
     protected final ConcurrentHashMap<Type<?>, List<Type<?>>> subclassingEntities = new ConcurrentHashMap<>();
     protected final BiMap<String, Class<? extends Check>> checkNames;
+    protected final Map<String, UserCheck> roleChecks;
 
     @Getter
     protected final Set<String> apiVersions;
@@ -104,8 +126,11 @@ public class EntityDictionary {
     @Getter
     protected final Function<Class, Serde> serdeLookup ;
 
-    public final static String REGULAR_ID_NAME = "id";
-    private final static ConcurrentHashMap<Type, String> SIMPLE_NAMES = new ConcurrentHashMap<>();
+    private final Set<Type<?>> entitiesToExclude;
+
+    public static final String REGULAR_ID_NAME = "id";
+    private static final ConcurrentHashMap<Type, String> SIMPLE_NAMES = new ConcurrentHashMap<>();
+    private static final String ALL_FIELDS = "*";
 
     /**
      * Instantiate a new EntityDictionary with the provided set of checks. In addition all of the checks
@@ -116,24 +141,36 @@ public class EntityDictionary {
      *               to their implementing classes
      */
     public EntityDictionary(Map<String, Class<? extends Check>> checks) {
+        this(checks, Collections.emptySet());
+    }
+
+    /**
+     * Instantiate a new EntityDictionary with the provided set of checks. In addition all of the checks
+     * in {@link com.yahoo.elide.core.security.checks.prefab} are mapped to {@code Prefab.CONTAINER.CHECK}
+     * (e.g. {@code @ReadPermission(expression="Prefab.Role.All")}
+     * or {@code @ReadPermission(expression="Prefab.Common.UpdateOnCreate")})
+     * @param checks a map that links the identifiers used in the permission expression strings
+     *               to their implementing classes.
+     * @param entitiesToExclude Set of Models to exclude from Binding.
+     */
+    public EntityDictionary(Map<String, Class<? extends Check>> checks, Set<Type<?>> entitiesToExclude) {
         this.checkNames = Maps.synchronizedBiMap(HashBiMap.create(checks));
+        this.roleChecks = new HashMap<>();
         this.apiVersions = new HashSet<>();
+        this.entitiesToExclude = entitiesToExclude;
         this.serdeLookup = CoerceUtil::lookup;
         initializeChecks();
 
         //Default injector only injects Elide internals.
-        this.injector = new Injector() {
-            @Override
-            public void inject(Object entity) {
-                if (entity instanceof FilterExpressionCheck) {
-                    try {
-                        java.lang.reflect.Field field =
-                                FilterExpressionCheck.class.getDeclaredField("dictionary");
-                        field.setAccessible(true);
-                        field.set(entity, EntityDictionary.this);
-                    } catch (NoSuchFieldException | IllegalAccessException e) {
-                        throw new IllegalStateException(e);
-                    }
+        this.injector = entity -> {
+            if (entity instanceof FilterExpressionCheck) {
+                try {
+                    java.lang.reflect.Field field =
+                            FilterExpressionCheck.class.getDeclaredField("dictionary");
+                    field.setAccessible(true);
+                    field.set(entity, EntityDictionary.this);
+                } catch (NoSuchFieldException | IllegalAccessException e) {
+                    throw new IllegalStateException(e);
                 }
             }
         };
@@ -141,7 +178,7 @@ public class EntityDictionary {
 
     /**
      * Instantiate a new EntityDictionary with the provided set of checks and an injection function.
-     * In addition all of the checks * in {@link com.yahoo.elide.core.security.checks.prefab} are mapped
+     * In addition, all of the checks * in {@link com.yahoo.elide.core.security.checks.prefab} are mapped
      * to {@code Prefab.CONTAINER.CHECK} * (e.g. {@code @ReadPermission(expression="Prefab.Role.All")}
      * or {@code @ReadPermission(expression="Prefab.Common.UpdateOnCreate")})
      * @param checks a map that links the identifiers used in the permission expression strings
@@ -150,22 +187,78 @@ public class EntityDictionary {
      *                 initialize Elide models.
      */
     public EntityDictionary(Map<String, Class<? extends Check>> checks, Injector injector) {
-        this(checks, injector, CoerceUtil::lookup);
+        this(checks, injector, Collections.emptySet());
+    }
+
+    /**
+     * Instantiate a new EntityDictionary with the provided set of checks and an injection function.
+     * In addition, all of the checks * in {@link com.yahoo.elide.core.security.checks.prefab} are mapped
+     * to {@code Prefab.CONTAINER.CHECK} * (e.g. {@code @ReadPermission(expression="Prefab.Role.All")}
+     * or {@code @ReadPermission(expression="Prefab.Common.UpdateOnCreate")})
+     * @param checks a map that links the identifiers used in the permission expression strings
+     *               to their implementing classes
+     * @param roleChecks a map that links the user check identifiers used in the permission expression strings
+     *                   to their User Check object
+     * @param injector a function typically associated with a dependency injection framework that will
+     *                 initialize Elide models.
+     */
+    public EntityDictionary(Map<String, Class<? extends Check>> checks,
+                            Map<String, UserCheck> roleChecks, Injector injector) {
+        this(checks, roleChecks, injector, CoerceUtil::lookup, Collections.emptySet());
+    }
+
+    /**
+     * Instantiate a new EntityDictionary with the provided set of checks and an injection function.
+     * In addition, all of the checks * in {@link com.yahoo.elide.core.security.checks.prefab} are mapped
+     * to {@code Prefab.CONTAINER.CHECK} * (e.g. {@code @ReadPermission(expression="Prefab.Role.All")}
+     * or {@code @ReadPermission(expression="Prefab.Common.UpdateOnCreate")})
+     * @param checks a map that links the identifiers used in the permission expression strings
+     *               to their implementing classes
+     * @param injector a function typically associated with a dependency injection framework that will
+     *                 initialize Elide models.
+     * @param entitiesToExclude Set of Models to exclude from Binding.
+     */
+    public EntityDictionary(Map<String, Class<? extends Check>> checks, Injector injector,
+            Set<Type<?>> entitiesToExclude) {
+        this(checks, injector, CoerceUtil::lookup, entitiesToExclude);
     }
 
     public EntityDictionary(Map<String, Class<? extends Check>> checks,
                             Injector injector,
                             Function<Class, Serde> serdeLookup) {
+        this(checks, injector, serdeLookup, Collections.emptySet());
+    }
+
+    public EntityDictionary(Map<String, Class<? extends Check>> checks,
+            Injector injector,
+            Function<Class, Serde> serdeLookup,
+            Set<Type<?>> entitiesToExclude) {
+        this(checks, null, injector, serdeLookup, entitiesToExclude);
+    }
+
+    public EntityDictionary(Map<String, Class<? extends Check>> checks,
+                            Map<String, UserCheck> roleChecks,
+                            Injector injector,
+                            Function<Class, Serde> serdeLookup,
+                            Set<Type<?>> entitiesToExclude) {
         this.serdeLookup = serdeLookup;
         this.checkNames = Maps.synchronizedBiMap(HashBiMap.create(checks));
+        this.roleChecks = roleChecks == null ? new HashMap<>() : roleChecks;
         this.apiVersions = new HashSet<>();
         initializeChecks();
         this.injector = injector;
+        this.entitiesToExclude = entitiesToExclude;
     }
 
     private void initializeChecks() {
-        addPrefabCheck("Prefab.Role.All", Role.ALL.class);
-        addPrefabCheck("Prefab.Role.None", Role.NONE.class);
+        UserCheck all = new Role.ALL();
+        UserCheck none = new Role.NONE();
+
+        addRoleCheck("Prefab.Role.All", all);
+        addRoleCheck("ALL", all);
+        addRoleCheck("Prefab.Role.None", none);
+        addRoleCheck("NONE", none);
+
         addPrefabCheck("Prefab.Collections.AppendOnly", AppendOnly.class);
         addPrefabCheck("Prefab.Collections.RemoveOnly", RemoveOnly.class);
     }
@@ -181,6 +274,40 @@ public class EntityDictionary {
 
     private static Package getParentPackage(Package pkg) {
         return pkg.getParentPackage();
+    }
+
+    /**
+     * Adds a user check for a given role to the dictionary.
+     * @param role The role associated with the check.
+     * @param check The instantiated check class.
+     */
+    public void addRoleCheck(String role, UserCheck check) {
+        roleChecks.put(role, check);
+    }
+
+    /**
+     * Returns an instantiated role check for the given role.
+     * @param role The role associated with the check.
+     * @return The user check associated with the role.
+     */
+    public UserCheck getRoleCheck(String role) {
+        return roleChecks.get(role);
+    }
+
+    /**
+     * Returns the map of role to their user role check object.
+     * @return
+     */
+    public Map<String, UserCheck> getRoleChecks() {
+        return roleChecks;
+    }
+
+    /**
+     * Gets all the registered check identifiers.
+     * @return A set of check identifier strings.
+     */
+    public Set<String> getCheckIdentifiers() {
+        return Sets.union(roleChecks.keySet(), checkNames.keySet());
     }
 
     /**
@@ -376,10 +503,21 @@ public class EntityDictionary {
     public String getCheckIdentifier(Class<? extends Check> checkClass) {
         String identifier = checkNames.inverse().get(checkClass);
 
-        if (identifier == null) {
-            return checkClass.getName();
+        if (identifier != null) {
+            return identifier;
         }
-        return identifier;
+
+        if (UserCheck.class.isAssignableFrom(checkClass)) {
+            for (Map.Entry<String, UserCheck> entry : roleChecks.entrySet()) {
+                UserCheck check = entry.getValue();
+                String name = entry.getKey();
+                if (check.getClass().equals(checkClass)) {
+                    return name;
+                }
+            }
+        }
+
+        return checkClass.getName();
     }
 
     /**
@@ -818,12 +956,24 @@ public class EntityDictionary {
     }
 
     /**
+     * Returns whether or not an entity can ever be shared post creation.
+     *
+     * @param entityClass the entity type to check for the shareable permissions
+     * @return true if entityClass can never be shared post creation.  False otherwise.
+     */
+    public boolean isStrictNonTransferable(Type<?> entityClass) {
+        NonTransferable nonTransferable = getAnnotation(entityClass, NonTransferable.class);
+
+        return (nonTransferable != null && nonTransferable.enabled() && nonTransferable.strict());
+    }
+
+    /**
      * Add given Entity bean to dictionary.
      *
      * @param cls Entity bean class
      */
     public void bindEntity(Class<?> cls) {
-        bindEntity(new ClassType(cls));
+        bindEntity(ClassType.of(cls));
     }
 
     /**
@@ -842,7 +992,7 @@ public class EntityDictionary {
      * @param hiddenAnnotations Annotations for hiding a field in API
      */
     public void bindEntity(Class<?> cls, Set<Class<? extends Annotation>> hiddenAnnotations) {
-        bindEntity(new ClassType(cls), hiddenAnnotations);
+        bindEntity(ClassType.of(cls), hiddenAnnotations);
     }
 
     /**
@@ -852,6 +1002,11 @@ public class EntityDictionary {
      * @param hiddenAnnotations Annotations for hiding a field in API
      */
     public void bindEntity(Type<?> cls, Set<Class<? extends Annotation>> hiddenAnnotations) {
+        if (entitiesToExclude.contains(cls)) {
+            //Exclude Entity
+            return;
+        }
+
         Type<?> declaredClass = lookupIncludeClass(cls);
 
         if (declaredClass == null) {
@@ -869,13 +1024,15 @@ public class EntityDictionary {
 
         bindJsonApiToEntity.put(Pair.of(type, version), declaredClass);
         apiVersions.add(version);
-        entityBindings.put(declaredClass, new EntityBinding(this, declaredClass,
-                type, version, hiddenAnnotations));
+        EntityBinding binding = new EntityBinding(this, declaredClass, type, version, hiddenAnnotations);
+        entityBindings.put(declaredClass, binding);
 
-        Include include = declaredClass.getAnnotation(Include.class);
-        if (include.rootLevel()) {
+        Include include = (Include) getFirstAnnotation(declaredClass, Arrays.asList(Include.class));
+        if (include != null && include.rootLevel()) {
             bindEntityRoots.add(declaredClass);
         }
+
+        bindLegacyHooks(binding);
     }
 
     /**
@@ -885,6 +1042,11 @@ public class EntityDictionary {
      */
     public void bindEntity(EntityBinding entityBinding) {
         Type<?> declaredClass = entityBinding.entityClass;
+
+        if (entitiesToExclude.contains(declaredClass)) {
+            //Exclude Entity
+            return;
+        }
 
         if (isClassBound(declaredClass)) {
             //Ignore duplicate bindings.
@@ -897,9 +1059,42 @@ public class EntityDictionary {
         bindJsonApiToEntity.put(Pair.of(entityBinding.jsonApiType, version), declaredClass);
         entityBindings.put(declaredClass, entityBinding);
         apiVersions.add(version);
-        if (include.rootLevel()) {
+        if (include != null && include.rootLevel()) {
             bindEntityRoots.add(declaredClass);
         }
+    }
+
+    /**
+     * Add a permissionExecutorGenerator to the provided class.
+     * @param clz Entity model class
+     * @param permissionExecutorFunction Function that given a request scope returns permissionExecutor
+     */
+    public void bindPermissionExecutor(Class<?> clz,
+                                       Function<RequestScope, PermissionExecutor> permissionExecutorFunction) {
+        bindPermissionExecutor(ClassType.of(clz), permissionExecutorFunction);
+    }
+
+    /**
+     * Add a permissionExecutorGenerator to the provided class.
+     * @param clz Entity model type
+     * @param permissionExecutorFunction Function that given a request scope returns permissionExecutor
+     */
+    public void bindPermissionExecutor(Type<?> clz,
+                                       Function<RequestScope, PermissionExecutor> permissionExecutorFunction) {
+        entityPermissionExecutor.put(lookupBoundClass(clz), permissionExecutorFunction);
+    }
+
+    /**
+     * Create a PermissionExecutor from list of bound permissionExecutorGenerator.
+     * @param scope - request scope to generate permission executor.
+     * @return Map of bound model type to its permission executor object.
+     */
+    public Map<Type<?>, PermissionExecutor> buildPermissionExecutors(RequestScope scope) {
+        return entityPermissionExecutor.entrySet().stream()
+                .collect(Collectors.toMap(
+                        Map.Entry::getKey,
+                        e -> e.getValue().apply(scope)
+                ));
     }
 
     /**
@@ -938,16 +1133,16 @@ public class EntityDictionary {
         return getEntityBinding(recordClass).getMethodAnnotation(annotationClass, method);
     }
 
-    public <A extends Annotation> Collection<LifeCycleHook> getTriggers(Type<?> cls,
-                                                                        LifeCycleHookBinding.Operation op,
-                                                                        LifeCycleHookBinding.TransactionPhase phase,
-                                                                        String fieldName) {
+    public Collection<LifeCycleHook> getTriggers(Type<?> cls,
+            Operation op,
+            TransactionPhase phase,
+            String fieldName) {
         return getEntityBinding(cls).getTriggers(op, phase, fieldName);
     }
 
-    public <A extends Annotation> Collection<LifeCycleHook> getTriggers(Type<?> cls,
-                                                                        LifeCycleHookBinding.Operation op,
-                                                                        LifeCycleHookBinding.TransactionPhase phase) {
+    public Collection<LifeCycleHook> getTriggers(Type<?> cls,
+            Operation op,
+            TransactionPhase phase) {
         return getEntityBinding(cls).getTriggers(op, phase);
     }
 
@@ -1241,11 +1436,8 @@ public class EntityDictionary {
     public boolean isComputed(Type<?> entityClass, String fieldName) {
         AccessibleObject fieldOrMethod = getAccessibleObject(entityClass, fieldName);
 
-        if (fieldOrMethod == null) {
-            return false;
-        }
-
-        return (fieldOrMethod.isAnnotationPresent(ComputedAttribute.class)
+        return fieldOrMethod != null
+                && (fieldOrMethod.isAnnotationPresent(ComputedAttribute.class)
                 || fieldOrMethod.isAnnotationPresent(ComputedRelationship.class));
     }
 
@@ -1305,7 +1497,7 @@ public class EntityDictionary {
      */
     public void addSecurityChecks(Set<Class<?>> classes) {
 
-        if (classes == null || classes.size() == 0) {
+        if (CollectionUtils.isEmpty(classes)) {
             return;
         }
 
@@ -1337,11 +1529,11 @@ public class EntityDictionary {
      * @param hook The callback to invoke.
      */
     public void bindTrigger(Class<?> entityClass,
-                            String fieldOrMethodName,
-                            LifeCycleHookBinding.Operation operation,
-                            LifeCycleHookBinding.TransactionPhase phase,
-                            LifeCycleHook hook) {
-        bindTrigger(new ClassType(entityClass), fieldOrMethodName, operation, phase, hook);
+            String fieldOrMethodName,
+            Operation operation,
+            TransactionPhase phase,
+            LifeCycleHook hook) {
+        bindTrigger(ClassType.of(entityClass), fieldOrMethodName, operation, phase, hook);
     }
 
     /**
@@ -1354,10 +1546,10 @@ public class EntityDictionary {
      * @param hook The callback to invoke.
      */
     public void bindTrigger(Type<?> entityClass,
-                            String fieldOrMethodName,
-                            LifeCycleHookBinding.Operation operation,
-                            LifeCycleHookBinding.TransactionPhase phase,
-                            LifeCycleHook hook) {
+            String fieldOrMethodName,
+            Operation operation,
+            TransactionPhase phase,
+            LifeCycleHook hook) {
         bindIfUnbound(entityClass);
 
         getEntityBinding(entityClass).bindTrigger(operation, phase, fieldOrMethodName, hook);
@@ -1377,11 +1569,11 @@ public class EntityDictionary {
      *                                 CRUD actions on the same model.
      */
     public void bindTrigger(Class<?> entityClass,
-                            LifeCycleHookBinding.Operation operation,
-                            LifeCycleHookBinding.TransactionPhase phase,
-                            LifeCycleHook hook,
-                            boolean allowMultipleInvocations) {
-        bindTrigger(new ClassType(entityClass), operation, phase, hook, allowMultipleInvocations);
+            Operation operation,
+            TransactionPhase phase,
+            LifeCycleHook hook,
+            boolean allowMultipleInvocations) {
+        bindTrigger(ClassType.of(entityClass), operation, phase, hook, allowMultipleInvocations);
     }
 
     /**
@@ -1398,10 +1590,10 @@ public class EntityDictionary {
      *                                 CRUD actions on the same model.
      */
     public void bindTrigger(Type<?> entityClass,
-                            LifeCycleHookBinding.Operation operation,
-                            LifeCycleHookBinding.TransactionPhase phase,
-                            LifeCycleHook hook,
-                            boolean allowMultipleInvocations) {
+            Operation operation,
+            TransactionPhase phase,
+            LifeCycleHook hook,
+            boolean allowMultipleInvocations) {
         bindIfUnbound(entityClass);
 
         if (allowMultipleInvocations) {
@@ -1436,7 +1628,7 @@ public class EntityDictionary {
      * @param <T> The result type.
      * @return The collection of results.
      */
-    public <T> List<T> walkEntityGraph(Set<Type<?>> entities,  Function<Type<?>, T> transform) {
+    public <T> List<T> walkEntityGraph(Set<Type<?>> entities, Function<Type<?>, T> transform) {
         ArrayList<T> results = new ArrayList<>();
         Queue<Type<?>> toVisit = new ArrayDeque<>(entities);
         Set<Type<?>> visited = new HashSet<>();
@@ -1563,8 +1755,9 @@ public class EntityDictionary {
     /**
      * Coerce provided value into expected class type.
      *
-     * @param value provided value
-     * @param fieldName the field name
+     * @param target The model instance which owns the field being coerced.
+     * @param value The value being coerced.
+     * @param fieldName the field name in the owning model instance.
      * @param fieldType expected class type
      * @return coerced value
      */
@@ -1688,7 +1881,7 @@ public class EntityDictionary {
     }
 
     /**
-     * Add a collection of argument to the attributes
+     * Add a collection of argument to the attributes.
      * @param cls The entity
      * @param attributeName attribute name to which argument has to be added
      * @param arguments Set of Argument type containing name and type of each argument.
@@ -1698,7 +1891,7 @@ public class EntityDictionary {
     }
 
     /**
-     * Add a single argument to the attribute
+     * Add a single argument to the attribute.
      * @param cls The entity
      * @param attributeName attribute name to which argument has to be added
      * @param argument A single argument
@@ -1708,13 +1901,31 @@ public class EntityDictionary {
     }
 
     /**
-     * Returns the Collection of all attributes of an argument.
+     * Add a single argument to the Entity.
+     * @param cls The entity
+     * @param argument A single argument
+     */
+    public void addArgumentToEntity(Type<?> cls, ArgumentType argument) {
+        getEntityBinding(cls).addArgumentToEntity(argument);
+    }
+
+    /**
+     * Returns the Collection of all arguments of an attribute.
      * @param cls The entity
      * @param attributeName Name of the argument for ehich arguments are to be retrieved.
      * @return A Set of ArgumentType for the given attribute.
      */
     public Set<ArgumentType> getAttributeArguments(Type<?> cls, String attributeName) {
         return entityBindings.getOrDefault(cls, EMPTY_BINDING).getAttributeArguments(attributeName);
+    }
+
+    /**
+     * Returns the Collection of all arguments of an entity.
+     * @param cls The entity
+     * @return A Set of ArgumentType for the given entity.
+     */
+    public Set<ArgumentType> getEntityArguments(Type<?> cls) {
+        return entityBindings.getOrDefault(cls, EMPTY_BINDING).getEntityArguments();
     }
 
     /**
@@ -1733,12 +1944,10 @@ public class EntityDictionary {
         if (column == null || column.length == 0) {
             if (joinColumn == null || joinColumn.length == 0) {
                 return fieldName;
-            } else {
-                return joinColumn[0].name();
             }
-        } else {
-            return column[0].name();
+            return joinColumn[0].name();
         }
+        return column[0].name();
     }
 
     /**
@@ -1753,6 +1962,17 @@ public class EntityDictionary {
         return (apiVersionAnnotation == null) ? NO_VERSION : apiVersionAnnotation.version();
     }
 
+    private static String getEntityPrefix(Type<?> modelClass) {
+        Include include =
+                (Include) getFirstPackageAnnotation(modelClass, Arrays.asList(Include.class));
+
+        if (include == null || include.name() == null || include.name().isEmpty()) {
+            return "";
+        }
+
+        return include.name() + "_";
+    }
+
     /**
      * Looks up the API model name for a given class.
      * @param modelClass The model class to lookup.
@@ -1760,25 +1980,121 @@ public class EntityDictionary {
      */
     public static String getEntityName(Type<?> modelClass) {
         Type<?> declaringClass = lookupAnnotationDeclarationClass(modelClass, Include.class);
+        if (declaringClass == null) {
+            declaringClass = lookupAnnotationDeclarationClass(modelClass, Entity.class);
+        }
+
+        String entityPrefix = getEntityPrefix(modelClass);
 
         Preconditions.checkNotNull(declaringClass);
         Include include = declaringClass.getAnnotation(Include.class);
 
-        if (! "".equals(include.type())) {
-            return include.type();
+        if (include != null && ! "".equals(include.name())) {
+            return entityPrefix + include.name();
         }
 
         Entity entity = (Entity) getFirstAnnotation(declaringClass, Arrays.asList(Entity.class));
         if (entity == null || "".equals(entity.name())) {
-            return StringUtils.uncapitalize(declaringClass.getSimpleName());
-        } else {
-            return entity.name();
+            return entityPrefix + StringUtils.uncapitalize(declaringClass.getSimpleName());
         }
+        return entityPrefix + entity.name();
     }
 
     public static <T> Type<T> getType(T object) {
         return object instanceof Dynamic
                 ? ((Dynamic) object).getType()
                 : new ClassType(object.getClass());
+    }
+
+    public void bindLegacyHooks(EntityBinding binding) {
+        binding.getAllMethods().stream()
+                .map(Method.class::cast)
+                .forEach(method -> {
+                    if (method.isAnnotationPresent(OnCreatePostCommit.class)) {
+                        bindHookMethod(binding, method, method.getAnnotation(OnCreatePostCommit.class).value(),
+                                TransactionPhase.POSTCOMMIT, Operation.CREATE);
+                    }
+                    if (method.isAnnotationPresent(OnCreatePreCommit.class)) {
+                        bindHookMethod(binding, method, method.getAnnotation(OnCreatePreCommit.class).value(),
+                                TransactionPhase.PRECOMMIT, Operation.CREATE);
+                    }
+                    if (method.isAnnotationPresent(OnCreatePreSecurity.class)) {
+                        bindHookMethod(binding, method, method.getAnnotation(OnCreatePreSecurity.class).value(),
+                                TransactionPhase.PRESECURITY, Operation.CREATE);
+                    }
+                    if (method.isAnnotationPresent(OnUpdatePostCommit.class)) {
+                        bindHookMethod(binding, method, method.getAnnotation(OnUpdatePostCommit.class).value(),
+                                TransactionPhase.POSTCOMMIT, Operation.UPDATE);
+                    }
+                    if (method.isAnnotationPresent(OnUpdatePreCommit.class)) {
+                        bindHookMethod(binding, method, method.getAnnotation(OnUpdatePreCommit.class).value(),
+                                TransactionPhase.PRECOMMIT, Operation.UPDATE);
+                    }
+                    if (method.isAnnotationPresent(OnUpdatePreSecurity.class)) {
+                        bindHookMethod(binding, method, method.getAnnotation(OnUpdatePreSecurity.class).value(),
+                                TransactionPhase.PRESECURITY, Operation.UPDATE);
+                    }
+                    if (method.isAnnotationPresent(OnReadPostCommit.class)) {
+                        bindHookMethod(binding, method, method.getAnnotation(OnReadPostCommit.class).value(),
+                                TransactionPhase.POSTCOMMIT, Operation.READ);
+                    }
+                    if (method.isAnnotationPresent(OnReadPreCommit.class)) {
+                        bindHookMethod(binding, method, method.getAnnotation(OnReadPreCommit.class).value(),
+                                TransactionPhase.PRECOMMIT, Operation.READ);
+                    }
+                    if (method.isAnnotationPresent(OnReadPreSecurity.class)) {
+                        bindHookMethod(binding, method, method.getAnnotation(OnReadPreSecurity.class).value(),
+                                TransactionPhase.PRESECURITY, Operation.READ);
+                    }
+                    if (method.isAnnotationPresent(OnDeletePostCommit.class)) {
+                        bindHookMethod(binding, method, null, TransactionPhase.POSTCOMMIT, Operation.DELETE);
+                    }
+                    if (method.isAnnotationPresent(OnDeletePreCommit.class)) {
+                        bindHookMethod(binding, method, null, TransactionPhase.PRECOMMIT, Operation.DELETE);
+                    }
+                    if (method.isAnnotationPresent(OnDeletePreSecurity.class)) {
+                        bindHookMethod(binding, method, null, TransactionPhase.PRESECURITY, Operation.DELETE);
+                    }
+                });
+    }
+
+    private void bindHookMethod(
+            EntityBinding binding,
+            Method method,
+            String annotationField,
+            TransactionPhase phase,
+            Operation operation) {
+
+        if (StringUtils.isEmpty(annotationField)) {
+            bindTrigger(binding.entityClass, operation, phase, generateHook(method), false);
+        } else if (annotationField.equals(ALL_FIELDS)) {
+            bindTrigger(binding.entityClass, operation, phase, generateHook(method), true);
+        } else {
+            bindTrigger(binding.entityClass, annotationField, operation, phase, generateHook(method));
+        }
+    }
+
+    private static LifeCycleHook generateHook(Method method) {
+        return (operation, phase, model, scope, changes) -> {
+            try {
+                int paramCount = method.getParameterCount();
+                Class<?>[] paramTypes = method.getParameterTypes();
+
+                if (changes.isPresent() && paramCount == 2
+                        && paramTypes[0].isInstance(scope)
+                        && paramTypes[1].isInstance(changes.get())) {
+                    method.invoke(model, scope, changes.get());
+                } else if (paramCount == 1 && paramTypes[0].isInstance(scope)) {
+                    method.invoke(model, scope);
+                } else if (paramCount == 0) {
+                    method.invoke(model);
+                } else {
+                    throw new IllegalArgumentException();
+                }
+            } catch (ReflectiveOperationException e) {
+                Throwables.propagateIfPossible(e.getCause());
+                throw new IllegalArgumentException(e);
+            }
+        };
     }
 }

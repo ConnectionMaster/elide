@@ -26,6 +26,8 @@ import java.util.Collections;
 import java.util.List;
 import java.util.function.Function;
 import java.util.function.Predicate;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
 import java.util.stream.Collectors;
 import java.util.stream.IntStream;
 
@@ -43,6 +45,7 @@ public class FilterPredicate implements FilterExpression, Function<RequestScope,
     @Getter @NonNull private List<Object> values;
     @Getter @NonNull private String field;
     @Getter @NonNull private String fieldPath;
+    @Getter @NonNull private Type fieldType;
 
     public static boolean toManyInPath(EntityDictionary dictionary, Path path) {
         return path.getPathElements().stream()
@@ -60,11 +63,11 @@ public class FilterPredicate implements FilterExpression, Function<RequestScope,
 
     public static boolean isLastPathElementAssignableFrom(EntityDictionary dictionary, Path path, Type<?> clz) {
         return path.lastElement()
-                .map(last ->
+                .filter(last ->
                         clz.isAssignableFrom(
                                 dictionary.getType(last.getType(), last.getFieldName())
                         ))
-                .orElse(false);
+                .isPresent();
     }
 
     public FilterPredicate(PathElement pathElement, Operator op, List<Object> values) {
@@ -85,6 +88,9 @@ public class FilterPredicate implements FilterExpression, Function<RequestScope,
         this.fieldPath = path.getPathElements().stream()
                 .map(PathElement::getFieldName)
                 .collect(Collectors.joining(PERIOD));
+        this.fieldType = path.lastElement()
+                .map(PathElement::getFieldType)
+                .orElse(null);
     }
 
     /**
@@ -164,13 +170,15 @@ public class FilterPredicate implements FilterExpression, Function<RequestScope,
     public static class FilterParameter {
         @Getter private String name;
         @Getter private Object value;
+        private static final Pattern ESCAPE_PATTERN = Pattern.compile("%", Pattern.LITERAL);
+        private static final String ESCAPED = Matcher.quoteReplacement("\\%");
 
         public String getPlaceholder() {
             return ":" + name;
         }
 
         public String escapeMatching() {
-            return value.toString().replace("%", "\\%");
+            return ESCAPE_PATTERN.matcher(value.toString()).replaceAll(ESCAPED);
         }
     }
 }
